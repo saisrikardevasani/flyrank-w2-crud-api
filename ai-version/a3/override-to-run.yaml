@@ -1,0 +1,5 @@
+# Mine, not the AI's. Its own files are unedited; this only pins the Postgres tag so the
+# stack gets far enough to compare API behaviour. See the "AI vs me" section of the README.
+services:
+  db:
+    image: postgres:17
