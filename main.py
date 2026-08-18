@@ -1,3 +1,4 @@
+import sqlite3
 from typing import Annotated
 
 from fastapi import FastAPI, HTTPException, Query
@@ -38,6 +39,12 @@ def fetch(conn, task_id: int) -> dict:
 async def error_shape(request, exc: HTTPException):
     """Every error answers with {"error": "..."} instead of FastAPI's default."""
     return JSONResponse(status_code=exc.status_code, content={"error": exc.detail})
+
+
+@app.exception_handler(sqlite3.OperationalError)
+async def busy_database(request, exc: sqlite3.OperationalError):
+    """Another writer is holding the file (DB Browser with unsaved changes does this)."""
+    return JSONResponse(status_code=503, content={"error": f"Database unavailable: {exc}"})
 
 
 @app.exception_handler(RequestValidationError)

@@ -37,6 +37,9 @@ def to_task(row: sqlite3.Row) -> dict:
 def init() -> None:
     """Create the file, the table and the three example rows, each only if they are missing."""
     with transaction() as conn:
+        # WAL lets readers carry on while something else is mid-write. Without it, having
+        # tasks.db open in DB Browser with unsaved changes makes every GET fail on a lock.
+        conn.execute("PRAGMA journal_mode = WAL")
         conn.execute(
             "CREATE TABLE IF NOT EXISTS tasks ("
             " id INTEGER PRIMARY KEY,"
