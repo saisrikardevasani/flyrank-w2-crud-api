@@ -1,5 +1,5 @@
 import sqlite3
-from typing import Annotated
+from typing import Annotated, Literal
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.exceptions import RequestValidationError
@@ -17,7 +17,6 @@ app = FastAPI(
 )
 
 # Every route now goes through db.py. Nothing is kept in memory between requests.
-SEED = db.SEED
 
 
 class TaskIn(BaseModel):
@@ -69,17 +68,28 @@ def health():
 def list_tasks(
     done: bool | None = None,
     search: str | None = None,
+    sort: Literal["id", "title"] = "id",
     limit: int = Query(50, ge=1, le=100),
     offset: int = Query(0, ge=0),
 ):
-    """limit/offset is capped at 100 so this never returns an unbounded list."""
-    with db.transaction() as conn:
-        found = [db.to_task(row) for row in conn.execute("SELECT * FROM tasks")]
+    """Filtering, searching and sorting all happen in SQL; Python never loops over rows.
+
+    Values travel as ? parameters. A column name cannot be a parameter, so `sort` is a
+    Literal: FastAPI rejects anything outside the two names before this function runs.
+    """
+    where, params = [], []
     if done is not None:
-        found = [t for t in found if t["done"] == done]
+        where.append("done = ?")
+        params.append(done)
     if search:
-        found = [t for t in found if search.lower() in t["title"].lower()]
-    return found[offset : offset + limit]
+        where.append("title LIKE ?")
+        params.append(f"%{search}%")
+    sql = "SELECT * FROM tasks"
+    if where:
+        sql += " WHERE " + " AND ".join(where)
+    sql += f" ORDER BY {sort} LIMIT ? OFFSET ?"
+    with db.transaction() as conn:
+        return [db.to_task(row) for row in conn.execute(sql, (*params, limit, offset))]
 
 
 @app.get("/tasks/{task_id}", summary="Get one task by id")
@@ -104,7 +114,8 @@ def update_task(task_id: int, body: TaskIn):
     with db.transaction() as conn:
         done = fetch(conn, task_id)["done"] if body.done is None else body.done
         conn.execute(
-            "UPDATE tasks SET title = ?, done = ? WHERE id = ?", (body.title, done, task_id)
+            "UPDATE tasks SET title = ?, done = ?, updated_at = datetime('now') WHERE id = ?",
+            (body.title, done, task_id),
         )
         return fetch(conn, task_id)
 

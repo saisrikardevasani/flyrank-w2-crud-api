@@ -34,6 +34,20 @@ def to_task(row: sqlite3.Row) -> dict:
     return {**dict(row), "done": bool(row["done"])}
 
 
+def migrate(conn) -> None:
+    """Add the timestamp columns to a tasks.db made before they existed.
+
+    The column names come from the tuple below, never from a request, so putting them in
+    the SQL text is safe. SQLite rejects a non-constant DEFAULT on ALTER TABLE, hence the
+    separate UPDATE to fill the rows that are already there.
+    """
+    existing = {row["name"] for row in conn.execute("PRAGMA table_info(tasks)")}
+    for column in ("created_at", "updated_at"):
+        if column not in existing:
+            conn.execute(f"ALTER TABLE tasks ADD COLUMN {column} TEXT")
+            conn.execute(f"UPDATE tasks SET {column} = datetime('now')")
+
+
 def init() -> None:
     """Create the file, the table and the three example rows, each only if they are missing."""
     with transaction() as conn:
@@ -44,8 +58,13 @@ def init() -> None:
             "CREATE TABLE IF NOT EXISTS tasks ("
             " id INTEGER PRIMARY KEY,"
             " title TEXT NOT NULL,"
-            " done INTEGER NOT NULL DEFAULT 0)"
+            " done INTEGER NOT NULL DEFAULT 0,"
+            " created_at TEXT NOT NULL DEFAULT (datetime('now')),"
+            " updated_at TEXT NOT NULL DEFAULT (datetime('now')))"
         )
+        migrate(conn)
+        # Sorting by title reads straight off this index instead of sorting every row.
+        conn.execute("CREATE INDEX IF NOT EXISTS tasks_title ON tasks (title)")
         # Seeding is all-or-nothing: three rows or none, never one and a crash.
         if conn.execute("SELECT COUNT(*) FROM tasks").fetchone()[0] == 0:
             conn.executemany(
