@@ -10,6 +10,7 @@ client = TestClient(main.app)
 def test_crud_cycle():
     client.post("/reset")
 
+    assert client.get("/").json()["name"] == "Task API"
     assert client.get("/health").json() == {"status": "ok"}
     assert len(client.get("/tasks").json()) == 3
 

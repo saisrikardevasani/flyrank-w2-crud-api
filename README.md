@@ -91,6 +91,11 @@ Every endpoint is listed, and **Try it out** sends the real request:
 
 ![Swagger UI at /docs](docs/swagger-ui.png)
 
+Posting an empty body through **Try it out**, which is the validation rule of stage 3 seen from
+the browser rather than from curl:
+
+![POST /tasks with an empty body, answered with 400](docs/swagger-tryit.png)
+
 ## Extras
 
 - **Filtering**: `GET /tasks?done=true` returns only the finished ones.

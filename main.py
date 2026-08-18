@@ -1,4 +1,4 @@
-from typing import Annotated, Optional
+from typing import Annotated
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.exceptions import RequestValidationError
@@ -24,7 +24,7 @@ class TaskIn(BaseModel):
     """What a client is allowed to send. An empty or missing title is rejected."""
 
     title: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
-    done: Optional[bool] = None
+    done: bool | None = None
 
 
 def find(task_id: int):
@@ -61,8 +61,8 @@ def health():
 
 @app.get("/tasks", summary="List tasks, optionally filtered")
 def list_tasks(
-    done: Optional[bool] = None,
-    search: Optional[str] = None,
+    done: bool | None = None,
+    search: str | None = None,
     limit: int = Query(50, ge=1, le=100),
     offset: int = Query(0, ge=0),
 ):
