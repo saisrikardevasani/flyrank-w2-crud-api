@@ -73,3 +73,17 @@ def create_task(body: TaskIn):
     }
     tasks.append(task)
     return task
+
+
+@app.put("/tasks/{task_id}")
+def update_task(task_id: int, body: TaskIn):
+    task = find(task_id)
+    task["title"] = body.title
+    if body.done is not None:
+        task["done"] = body.done
+    return task
+
+
+@app.delete("/tasks/{task_id}", status_code=204)
+def delete_task(task_id: int):
+    tasks.remove(find(task_id))
