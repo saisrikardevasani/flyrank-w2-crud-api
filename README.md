@@ -254,6 +254,12 @@ There is no syncing step and no cache to clear: `psql` and the app are two clien
 server. Under SQLite this same experiment was where A2 found a bug, because a second program
 holding the file locked made every request fail. Postgres is built for the second program.
 
+A2 did this through a GUI rather than a prompt, and those screenshots are still here:
+[`docs/db-browser.png`](docs/db-browser.png) is `tasks.db` open in DB Browser for SQLite and
+[`docs/sql-execute.png`](docs/sql-execute.png) is its Execute SQL tab running
+`SELECT * FROM tasks WHERE done = 1;`. Nothing in the repo points at a SQLite file any more, so
+they are kept as the record of that week rather than as instructions.
+
 ## Query parameters
 
 - **Filter**: `GET /tasks?done=true` becomes `WHERE done = %s`.
