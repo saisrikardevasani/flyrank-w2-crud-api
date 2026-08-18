@@ -1,24 +1,71 @@
-# Task API (FlyRank W2 + W3)
+# Task API (FlyRank A1 to A3)
 
-A small to-do API built with FastAPI: create, read, update and delete tasks. Week 2 kept the
-tasks in a Python list, so every restart threw them away. Week 3 moved the same five endpoints
-onto a SQLite file called `tasks.db`. The requests and the responses did not change; the data
-now outlives the process.
+A small to-do API built with FastAPI: create, read, update and delete tasks. The five endpoints
+have not moved since A1. Where the tasks live has moved three times: a Python list (A1, thrown
+away on every restart), a SQLite file (A2), and now a PostgreSQL server of its own (A3). One
+command starts the app and that database together.
 
-FastAPI generates Swagger UI from the code, so the interactive docs sit at
-http://localhost:8000/docs with nothing extra installed.
+## Run it
 
-## The database
-
-Postgres runs as a container, so nothing is installed on your machine:
+You need Docker, and nothing else. Postgres is never installed on your machine; it arrives as
+an image.
 
 ```bash
-docker run --name taskdb -e POSTGRES_PASSWORD=dev -e POSTGRES_DB=tasks \
-  -p 5432:5432 -v taskdata:/var/lib/postgresql/data -d postgres:17
+cp .env.example .env && docker compose up
+```
+
+That builds the app image, starts Postgres, waits until it is accepting connections, creates
+the `tasks` table and seeds the three example tasks. The API answers on
+http://localhost:3000 and Swagger UI is at http://localhost:3000/docs.
+
+`docker compose down` stops both containers and keeps the data. `docker compose down -v` also
+deletes the volume, which is the only way to lose it.
+
+### The variables
+
+`.env` is git-ignored and never committed. [`.env.example`](.env.example) is committed with the
+same keys, and copying it is the whole setup step:
+
+| Variable | What it is | Value in `.env.example` |
+|---|---|---|
+| `POSTGRES_USER` | Database user the container creates | `postgres` |
+| `POSTGRES_PASSWORD` | That user's password | `dev` |
+| `POSTGRES_DB` | Database created on first start | `tasks` |
+| `DATABASE_URL` | What the app connects with | `postgresql://postgres:dev@localhost:5432/tasks` |
+| `REDIS_URL` | Redis, added in the extras | `redis://localhost:6379` |
+
+Compose reads `.env` to fill in `${POSTGRES_PASSWORD}` and friends, so the password appears in
+no committed file. Inside the compose network the app reaches the database at `db:5432`, not
+`localhost`, so `compose.yaml` overrides `DATABASE_URL` for the `api` service. The `localhost`
+value in `.env` is for the other way of running it, below.
+
+### Running the app outside the container
+
+Useful when you want `--reload`. The `db` service publishes 5432, so start the database only
+and point the app at it:
+
+```bash
+docker compose up -d db
+python3.11 -m venv .venv && .venv/bin/pip install -r requirements.txt
+.venv/bin/uvicorn main:app --reload --port 3000
+```
+
+Python 3.10 or newer. On 3.9 pip fails on the FastAPI pin with a list of versions and no
+explanation; point the first step at a newer interpreter and leave the rest alone.
+
+To run the checks: `.venv/bin/python test_api.py`, which prints `all checks passed`. It calls
+`POST /reset` first, so it leaves the table holding the three example tasks.
+
+## The two services
+
+```yaml
+services:
+  api:   # built from the Dockerfile, uvicorn on 3000
+  db:    # the official postgres:17 image, data on a named volume
 ```
 
 The tag is pinned. `postgres:latest` is 18, which moved its data directory and refuses to start
-against a volume mounted at `/var/lib/postgresql/data`:
+against a volume mounted where the assignment mounts one:
 
 ```
 Error: in 18+, these Docker images are configured to store database data in a
@@ -27,41 +74,22 @@ Error: in 18+, these Docker images are configured to store database data in a
          /var/lib/postgresql/data (unused mount/volume)
 ```
 
-Open a SQL prompt inside the container with
-`docker exec -it taskdb psql -U postgres -d tasks`.
+`db` has a health check and `api` waits on `condition: service_healthy` rather than the plain
+`depends_on: [db]`. Postgres accepts connections a second or two after the container starts,
+and this app creates its table on import, so starting the two at the same moment is a race the
+app loses about as often as it wins.
 
-## Run it
+## Why Postgres
 
-You need Python 3.10 or newer. From a clean checkout, one command:
+- **It is a server, not a file.** Several programs can hold connections at once and Postgres
+  arbitrates between them, instead of one writer locking a file for everyone else.
+- **It has real types.** `boolean` is a boolean, so `done` no longer travels as 0 and 1 and
+  gets converted back on the way out. `timestamptz` keeps the offset.
+- **It is what the job actually uses.** The same engine behind a large share of backends.
+- **It costs nothing to run.** `docker compose up`, and `down -v` when you want it gone.
 
-```bash
-python3 -m venv .venv && .venv/bin/pip install -r requirements.txt && .venv/bin/uvicorn main:app --reload
-```
-
-There is no database step. `tasks.db` does not exist in the repo; `db.init()` creates the file,
-the `tasks` table, the index and the three example rows when the app is imported. A fresh clone
-of this repo took 5.0 seconds from `git clone` to answering `GET /tasks` with the three seeded
-tasks.
-
-If `python3 --version` says 3.9 or older, pip will fail on the FastAPI pin with a long list of
-versions and no explanation. Point the first step at a newer interpreter and leave the rest of
-the command alone: `python3.11 -m venv .venv`.
-
-Open http://localhost:8000/docs and hit **Try it out** on any endpoint.
-
-To run the checks: `.venv/bin/python test_api.py`, which prints `all checks passed`. It calls
-`POST /reset` first, so it leaves `tasks.db` holding the three example tasks.
-
-## Why SQLite
-
-- **It is one file.** `tasks.db` sits next to `main.py`. Copying the file copies the data.
-- **There is nothing to install or start.** `sqlite3` ships with Python, and SQLite has no
-  server process, no port and no user accounts. The Week 2 run command still works unchanged.
-- **The data survives a restart**, a crash and a laptop lid closing, which a Python list does
-  not.
-
-`tasks.db` is git-ignored (along with the `-wal` and `-shm` files SQLite writes beside it), so
-every clone starts from the same three seeded tasks rather than from my test data.
+The trade is that there is now a second program to start, which is exactly the problem compose
+solves.
 
 ## Proof: the same responses, now from Postgres
 
@@ -112,67 +140,87 @@ content-type: application/json
 ```
 
 A `PUT` moves `updated_at` and leaves `created_at` alone, which is the pair of timestamps
-above: `.279057` for both on create, `.298393` for the update.
+above: `.279057` for both on create, `.298393` after the update.
 
 The `date`, `server` and `content-length` headers are trimmed out of every response above to
 keep it readable.
 
+One shape did change between A2 and A3. SQLite stored the timestamps as text, so they came back
+as `"2026-08-18 13:17:40"`; Postgres stores `timestamptz`, so they come back as
+`"2026-08-18T13:59:00.837806+00:00"`. `id`, `title` and `done` are byte-for-byte what A1
+returned.
+
 ### Persistence, the point of the week
 
-```console
-$ curl -s -X POST localhost:3000/tasks -H "Content-Type: application/json" -d '{"title":"Survive a restart"}'
-{"id":4,"title":"Survive a restart","done":false,"created_at":"2026-08-18 13:17:54","updated_at":"2026-08-18 13:17:54"}
+Two tasks created, then the whole stack destroyed and rebuilt:
 
-# stop the server (Ctrl-C), start it again, ask for the same task
-$ curl -s localhost:3000/tasks/4
-{"id":4,"title":"Survive a restart","done":false,"created_at":"2026-08-18 13:17:54","updated_at":"2026-08-18 13:17:54"}
+```console
+$ curl -s -X POST localhost:3000/tasks -H "Content-Type: application/json" -d '{"title":"Survive a compose down"}'
+{"id":4,"title":"Survive a compose down","done":false,"created_at":"2026-08-18T14:02:05.137269+00:00",...}
+
+$ docker compose down
+ Container task-api-api-1  Removed
+ Container task-api-db-1  Removed
+ Network task-api_default  Removed
+
+$ docker compose up -d
+$ curl -s localhost:3000/tasks
+[... 5 tasks, ids 1 to 5, "Survive a compose down" and "Prove the volume works" still there ...]
 ```
 
-Second proof, from outside the API: `docs/db-browser.png` below is `tasks.db` opened in DB
-Browser for SQLite, showing the same rows as a spreadsheet.
+The containers were deleted, not stopped. The rows survived because they were never in a
+container: they are on the named volume `task-api_taskdata`, which `docker compose down` leaves
+alone. The timestamps came back identical, which is the giveaway that these are the original
+rows rather than a fresh seed.
 
-![The tasks table open in DB Browser for SQLite](docs/db-browser.png)
+### The same rows, seen from the database
+
+`docker compose exec db psql -U postgres -d tasks`, then `\dt` and a `SELECT`:
+
+![The tasks table and its five rows in psql](docs/postgres-psql.png)
+
+Ids 4 and 5 in that screenshot are the two tasks that lived through the `down` and `up` above.
 
 ## Endpoints
 
 | Method | Path | Does | Success | Errors |
 |---|---|---|---|---|
 | GET | `/` | What this API is | 200 | |
-| GET | `/health` | Liveness check, returns `{"status":"ok"}` | 200 | |
+| GET | `/health` | Liveness check | 200 | |
 | GET | `/tasks` | List tasks. Optional `?done=`, `?search=`, `?sort=`, `?limit=`, `?offset=` | 200 | 400 bad query |
 | GET | `/tasks/{id}` | One task | 200 | 404 unknown id |
 | POST | `/tasks` | Create from `{"title": "Buy milk"}` | 201 | 400 missing or empty title |
 | PUT | `/tasks/{id}` | Replace `title`, optionally `done` | 200 | 400 invalid body, 404 unknown id |
 | DELETE | `/tasks/{id}` | Remove it, empty body | 204 | 404 unknown id |
-| GET | `/stats` | `{"total":3,"done":1,"open":2}`, counted with `SELECT COUNT(*)` | 200 | |
+| GET | `/stats` | `{"total":3,"done":1,"open":2}`, counted in SQL | 200 | |
 | POST | `/reset` | Empty the table and seed it again | 200 | |
 
-A task looks like
-`{"id":1,"title":"Read the assignment","done":true,"created_at":"2026-08-18 13:17:40","updated_at":"2026-08-18 13:17:40"}`.
 Every error comes back in the same shape, `{"error": "..."}`, whatever went wrong. The 404 text
-keeps the Week 2 wording (`Task 999 not found` rather than `Task not found`) because the point
-of this week was to change the storage and nothing else.
+keeps the A1 wording (`Task 999 not found` rather than `Task not found`) because the point of
+these assignments is to change the storage and nothing else.
 
 ## The table
 
 ```sql
 CREATE TABLE IF NOT EXISTS tasks (
-  id INTEGER PRIMARY KEY,
-  title TEXT NOT NULL,
-  done INTEGER NOT NULL DEFAULT 0,
-  created_at TEXT NOT NULL DEFAULT (datetime('now')),
-  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+  id serial PRIMARY KEY,
+  title text NOT NULL,
+  done boolean NOT NULL DEFAULT false,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS tasks_title ON tasks (title);
+CREATE INDEX IF NOT EXISTS tasks_done ON tasks (done);
 ```
 
-`id INTEGER PRIMARY KEY` makes SQLite hand out the ids, so a client never sends one. SQLite has
-no boolean type, so `done` is stored as 0 or 1 and `db.to_task()` turns it back into `true` or
-`false` on the way out.
+`serial` makes Postgres hand out the ids, so a client never sends one. It is a sequence behind
+the scenes, which is why `POST /reset` runs `TRUNCATE tasks RESTART IDENTITY` rather than
+`DELETE`: a sequence keeps counting after a `DELETE`, and the fresh example tasks would come
+back as ids 4, 5 and 6.
 
-Every value reaches SQLite as a `?` parameter. A column name cannot be a parameter, so `?sort=`
-is typed as `Literal["id", "title"]` and FastAPI rejects anything else before the query is
-built:
+Every value reaches Postgres as a `%s` parameter, never glued into the SQL text. A column name
+cannot be a parameter, so `?sort=` is typed as `Literal["id", "title"]` and FastAPI rejects
+anything else before a query is built:
 
 ```console
 $ curl -s 'http://localhost:3000/tasks?sort=id;%20DROP%20TABLE%20tasks'
@@ -181,63 +229,42 @@ $ curl -s 'http://localhost:3000/tasks?sort=id;%20DROP%20TABLE%20tasks'
 
 ## Talking to the database by hand
 
-`docs/sql-execute.png` is DB Browser's Execute SQL tab. The query is
-`SELECT * FROM tasks WHERE done = 1;` and it returned one row, `Read the assignment`, in 8ms,
-which is the same single task `GET /tasks?done=true` answers with.
-
-![SELECT * FROM tasks WHERE done = 1 in DB Browser](docs/sql-execute.png)
-
-Running `UPDATE tasks SET done = 1;` in DB Browser and pressing **Write Changes** made
-`GET /tasks` return all three tasks as done, with the server left running the whole time.
-`DELETE FROM tasks WHERE done = 1;` then made it return `[]`. There is no syncing step: DB
-Browser and the API open the same file.
-
-That experiment also found a bug. While DB Browser held the change unsaved, it kept a write
-lock on the file and every request came back as a 500. `db.init()` now switches the database
-into WAL mode, where a reader never waits for a writer, and a write that really is blocked
-answers `503 {"error": "Database unavailable: database is locked"}` instead of a bare
-`Internal Server Error`:
+`docker compose exec db psql -U postgres -d tasks` opens a SQL prompt inside the container.
+Changes made there are visible to the API immediately, with the server left running:
 
 ```console
-$ curl -s -o /dev/null -w '%{http_code}\n' http://localhost:3000/tasks
-200
-$ curl -s -X POST http://localhost:3000/tasks -H "Content-Type: application/json" -d '{"title":"blocked"}'
-{"error":"Database unavailable: database is locked"}
+$ docker compose exec db psql -U postgres -d tasks -c "UPDATE tasks SET done = true;"
+UPDATE 3
+$ curl -s http://localhost:3000/stats
+{"total":3,"done":3,"open":0}
+
+$ docker compose exec db psql -U postgres -d tasks -c "DELETE FROM tasks WHERE done = true;"
+DELETE 3
+$ curl -s http://localhost:3000/tasks
+[]
 ```
 
-Both of those ran while a separate connection held `BEGIN EXCLUSIVE` open.
+There is no syncing step and no cache to clear: `psql` and the app are two clients of the same
+server. Under SQLite this same experiment was where A2 found a bug, because a second program
+holding the file locked made every request fail. Postgres is built for the second program.
 
-## Extras
+## Query parameters
 
-- **Filter**: `GET /tasks?done=true` becomes `WHERE done = ?`.
-- **Search**: `GET /tasks?search=git` becomes `WHERE title LIKE ?` with `%git%`. SQLite's LIKE
-  ignores case for ASCII, so it still matches `Push it to GitHub`, as the list version did.
+- **Filter**: `GET /tasks?done=true` becomes `WHERE done = %s`.
+- **Search**: `GET /tasks?search=git` becomes `WHERE title ILIKE %s` with `%git%`.
 - **Sort**: `GET /tasks?sort=title` adds `ORDER BY title`.
-- **Stats**: `GET /stats` runs two `SELECT COUNT(*)` queries rather than counting in Python.
-- **Pagination**: `LIMIT ? OFFSET ?`, with limit capped at 100.
+- **Stats**: `GET /stats` is one `COUNT(*) FILTER (WHERE done)` query rather than two.
+- **Pagination**: `LIMIT %s OFFSET %s`, with limit capped at 100.
 
-Filtering moved out of Python entirely, and sorting is new. The Week 2 `list_tasks` fetched the
-whole list, narrowed it with two Python loops and then sliced it; there was no `?sort=` at all.
-The current one builds a single query and returns whatever comes back, so `?sort=title&limit=2`
-orders the whole table before taking two rows rather than after.
-
-### The index
+`ILIKE`, not `LIKE`, and this is the one line where a storage swap nearly changed behaviour.
+SQLite's `LIKE` ignores case for ASCII, so `?search=github` found `Push it to GitHub` in A2.
+Postgres's `LIKE` is case-sensitive, so the same code ported literally would have returned an
+empty list, silently, with no error anywhere:
 
 ```console
-$ sqlite3 tasks.db 'EXPLAIN QUERY PLAN SELECT * FROM tasks ORDER BY title LIMIT 50 OFFSET 0;'
-QUERY PLAN
-`--SCAN tasks USING INDEX tasks_title
-
-$ sqlite3 tasks.db "EXPLAIN QUERY PLAN SELECT * FROM tasks WHERE title LIKE '%git%' ORDER BY id LIMIT 50 OFFSET 0;"
-QUERY PLAN
-`--SCAN tasks
+$ curl -s 'http://localhost:3000/tasks?search=github'
+[{"id":3,"title":"Push it to GitHub","done":false,...}]
 ```
-
-An index is a second copy of one column kept in sorted order, so the database can find or order
-rows without reading all of them. The interesting half is the second plan: `LIKE '%git%'` starts
-with a wildcard, and an index sorted by title cannot help you find words in the middle of a
-title, so the search still scans every row. The index earns its keep on `ORDER BY title`, not
-on the query I added it for.
 
 ### The transaction
 
@@ -246,32 +273,36 @@ all. If the process died between the second and third insert, a half-seeded tabl
 "not empty" on the next start and would never be repaired, because the seed only runs when the
 count is 0.
 
-### Timestamps, and why migrations exist
+### What the repository module buys
 
-Adding `created_at` and `updated_at` was two words in `CREATE TABLE` for a new database and
-nothing at all for anyone cloning fresh. My own `tasks.db` already had rows, and `CREATE TABLE
-IF NOT EXISTS` skips a table that exists, so the new columns simply did not appear and every
-query broke on the old file. The fix is `db.migrate()`: read `PRAGMA table_info(tasks)`, add
-each missing column, then fill it, which is a hand-rolled version of what a migration tool
-does. SQLite also refuses a non-constant `DEFAULT` on `ALTER TABLE ADD COLUMN`, so backfilling
-the existing rows needs its own `UPDATE`.
+Every SQL string in this project is in [`db.py`](db.py). [`main.py`](main.py) has routes,
+validation and status codes and does not contain the word `SELECT`. That is why moving from
+SQLite to Postgres changed one file plus three new infrastructure files, and no route.
+
+A2 needed a hand-rolled `db.migrate()` that read `PRAGMA table_info(tasks)` and added missing
+columns, because `CREATE TABLE IF NOT EXISTS` silently skips a table that already exists and my
+own `tasks.db` predated the timestamp columns. A3 starts from an empty volume, so that function
+is gone rather than ported. The lesson it taught still stands: the second time you change a
+table, you need migrations, and every database gets a second time.
 
 ## Storage is an implementation detail
 
-The Week 2 test file was written against the in-memory version. At commit `4ff2a50`, the last
-stage before the extras, it was run against the SQLite version with no edit at all and printed
-`all checks passed`. Same assertions, same status codes, same JSON, different storage.
+[`test_api.py`](test_api.py) was written against the in-memory A1 version. It was run against
+the SQLite version with no edit and printed `all checks passed`. At stage 3 of this assignment
+it was run against Postgres, again with no edit (`git diff HEAD -- test_api.py` was empty), and
+printed `all checks passed` again.
 
-That is the whole argument in one command. The tests describe the promise the API makes, so
-they cannot tell whether a task lives in a list or on disk; only the storage layer changed, and
-it is not the storage layer that clients depend on. The tests did change later, but for a
-different reason: the timestamps extra added two fields to the response, which is a change to
-the promise rather than to where it is kept.
+Same assertions, same status codes, same JSON, three different storage engines. The tests
+describe the promise the API makes to a client, and a client cannot tell whether a task is in a
+list, a file or a server on another host. That is what "storage is an implementation detail"
+means, and A15 (layered architecture) is the assignment that makes the boundary formal instead
+of a rule I keep by hand.
 
 ## Swagger UI
 
 Every endpoint is listed, and **Try it out** sends the real request. Both screenshots below came
-from headless Chrome driving the page against the running app, not from a hand-taken snap:
+from headless Chrome driving http://localhost:3000/docs against the compose stack, so they show
+the Postgres build rather than a hand-taken snap of an older one:
 
 ![Swagger UI at /docs, listing all nine endpoints](docs/swagger-ui.png)
 
@@ -280,11 +311,12 @@ Posting `{}` through **Try it out** on `POST /tasks`, which answered `400` with
 
 ![POST /tasks with an empty body, answered with 400](docs/swagger-tryit.png)
 
-One mismatch is visible in that screenshot: the "Responses" table still declares `422 Validation
-Error`, because that is what FastAPI generates for a body-validated route. The app answers 400,
-so the generated docs and the running code disagree on that one line.
+One mismatch is visible in that screenshot: the server response is `400 Undocumented`, while the
+"Responses" table below it still declares `422 Validation Error`, because that is what FastAPI
+generates for a body-validated route. The app answers 400, so the generated docs and the running
+code disagree on that one line.
 
-## AI vs me, week 3 (the move to SQLite)
+## AI vs me, A2 (the move to SQLite)
 
 I did stages 0 to 5 by hand, then wrote [`ai-version/w3/prompt-v1.md`](ai-version/w3/prompt-v1.md)
 from memory without opening this brief, and had an AI do the same migration from that prompt
@@ -355,7 +387,7 @@ produced a leak; the v2 prompt was 2 pages and produced code I would merge. The 
 between them is not cleverness, it is the seven things I only knew to write down because I had
 already run the first version and watched a file handle counter go up.
 
-## Week 2, for the record
+## A1, for the record
 
 The in-memory version is still in the history, up to commit `122991e`. Its README ended with an
 experiment: add a fourth task, stop the server, start it again, ask for `GET /tasks`. The list
@@ -363,7 +395,7 @@ was back to three and the fourth was gone, because the tasks only ever existed a
 inside one process. Killing the process killed the data. Everything above is the answer to that.
 
 
-## AI vs me, week 2 (the in-memory API)
+## AI vs me, A1 (the in-memory API)
 
 Week 2's stages are hand-written. After finishing them I wrote a prompt from memory, asked
 Claude to build the same API from that prompt alone, and kept its output in
@@ -420,12 +452,15 @@ knew which six sentences were missing.
 
 ## Notes on the implementation
 
-`db.py` holds every SQL string and the connection handling, 73 lines of it; `main.py` holds the
-routes and validation and never mentions `sqlite3` except in the handler that catches a locked
-database. Each request opens its own connection, because SQLite connections are cheap to open
-and sharing one across uvicorn's worker threads is not safe.
+`db.py` holds every SQL string and the connection handling, 138 lines of it; `main.py` holds the
+routes and validation in 110 lines and never mentions `psycopg` except in the handler that
+catches a database it cannot reach. Each request opens its own connection. Postgres connections
+cost milliseconds rather than SQLite's microseconds, which is affordable at this size; a pool
+(`psycopg_pool`) is the upgrade if the request rate ever makes it matter.
 
 Validation lives in one Pydantic model, `TaskIn`, and error formatting lives in three exception
 handlers, so every route answers in `{"error": "..."}` without any route repeating that logic.
 FastAPI's own default for a bad body is 422; the handler maps it to the 400 this assignment
-asks for.
+asks for. A database that is down answers `503` rather than a bare `Internal Server Error`,
+which matters more now that the database is a separate program that can be missing while the
+app is perfectly healthy.
