@@ -1,6 +1,6 @@
 from typing import Annotated, Optional
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, StringConstraints
@@ -12,11 +12,12 @@ app = FastAPI(
 )
 
 # In-memory "database" — a plain list. Restarting the server resets it.
-tasks = [
+SEED = [
     {"id": 1, "title": "Read the assignment", "done": True},
     {"id": 2, "title": "Build the CRUD API", "done": False},
     {"id": 3, "title": "Push it to GitHub", "done": False},
 ]
+tasks = [dict(t) for t in SEED]
 
 
 class TaskIn(BaseModel):
@@ -58,9 +59,20 @@ def health():
     return {"status": "ok"}
 
 
-@app.get("/tasks", summary="List every task")
-def list_tasks():
-    return tasks
+@app.get("/tasks", summary="List tasks, optionally filtered")
+def list_tasks(
+    done: Optional[bool] = None,
+    search: Optional[str] = None,
+    limit: int = Query(50, ge=1, le=100),
+    offset: int = Query(0, ge=0),
+):
+    """Real APIs never return "everything" — hence limit/offset, capped at 100."""
+    found = tasks
+    if done is not None:
+        found = [t for t in found if t["done"] == done]
+    if search:
+        found = [t for t in found if search.lower() in t["title"].lower()]
+    return found[offset : offset + limit]
 
 
 @app.get("/tasks/{task_id}", summary="Get one task by id")
@@ -91,3 +103,15 @@ def update_task(task_id: int, body: TaskIn):
 @app.delete("/tasks/{task_id}", status_code=204, summary="Delete a task")
 def delete_task(task_id: int):
     tasks.remove(find(task_id))
+
+
+@app.get("/stats", summary="Count tasks by state")
+def stats():
+    done = sum(1 for t in tasks if t["done"])
+    return {"total": len(tasks), "done": done, "open": len(tasks) - done}
+
+
+@app.post("/reset", summary="Restore the 3 example tasks")
+def reset():
+    tasks[:] = [dict(t) for t in SEED]
+    return tasks
