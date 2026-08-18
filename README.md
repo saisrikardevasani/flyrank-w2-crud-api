@@ -244,6 +244,77 @@ than from curl:
 
 ![POST /tasks with an empty body, answered with 400](docs/swagger-tryit.png)
 
+## AI vs me, week 3 (the move to SQLite)
+
+I did stages 0 to 5 by hand, then wrote [`ai-version/w3/prompt-v1.md`](ai-version/w3/prompt-v1.md)
+from memory without opening this brief, and had an AI do the same migration from that prompt
+alone. Its code is [`ai-version/w3/db.py`](ai-version/w3/db.py) and
+[`ai-version/w3/main.py`](ai-version/w3/main.py), 76 and 75 lines, generated in a folder of its
+own and not edited since, including the one bug below.
+
+It started on the first try, created its own `tasks.db`, and passed my stage 2 and stage 3
+checkpoints. Five restarts left three rows each time. A task created before a restart was still
+there afterwards. Every rule my prompt actually stated came out right: 201 on create, 400 for a
+missing, empty or whitespace-only title, 404 on unknown ids for GET, PUT and DELETE, 204 with an
+empty body, the `{"error": ...}` envelope, `done` back as a JSON boolean, and `?` parameters
+everywhere with no string-glued SQL.
+
+Three differences that showed up when I ran both:
+
+| What I probed | Mine | AI v1 |
+|---|---|---|
+| Open handles on `tasks.db` after 200 `GET /tasks` | 0, unchanged | grew from 4 to 12 |
+| Insert after deleting the highest id | reuses the id (4 again) | jumps to 6, never reuses |
+| Tables in the file | `tasks` | `tasks` and `sqlite_sequence` |
+| `GET /`, `GET /health`, `GET /stats`, `?done=`, `?search=` | 200 | 404, none of them exist |
+| 404 body | `{"error":"Task 999 not found"}` | `{"error":"Task not found"}` |
+
+**What it did better.** Its update is one statement where mine is two:
+
+```sql
+UPDATE tasks SET title = ?, done = COALESCE(?, done) WHERE id = ?
+```
+
+`COALESCE` keeps the stored `done` when the parameter is NULL, so the rule "a PUT without `done`
+leaves it alone" is expressed in SQL. My version reads the row first to find the current value,
+then writes. Both are correct because both run inside a transaction, but the AI needed one round
+trip to the database and no prior read. It also used `cur.rowcount` to tell a missing id from a
+real update, where I run an extra `SELECT`. That is a better use of what the database already
+tells you.
+
+**What it got wrong.** `with sqlite3.connect(...) as conn` commits the transaction, but unlike
+most Python context managers it does not close the object. The AI opens a connection per call
+and never closes one, so open handles on `tasks.db` climbed from 4 to 12 over 200 requests
+against a table of three rows. It looks exactly like correct code and it is the kind of leak
+that only shows up in production. Its `AUTOINCREMENT` is a smaller thing but the same shape: it
+sounds like the way to get automatic ids, it is not needed for that, and it quietly adds a
+second table to the file.
+
+**What my prompt forgot.** I said "keep these five endpoints" and listed five, so the four
+others in my app do not exist in its version; that is my sentence, not its mistake. I said the
+endpoints must behave exactly as they do now without quoting the 404 text, so it wrote a
+sensible generic message that no existing client would match. I never mentioned closing
+connections, timestamps, an index, or WAL. And one thing we both got wrong: my prompt said
+every error must use the `{"error": ...}` envelope, and neither version does it for a URL that
+matches no route at all. Both answer `GET /nope` with Starlette's own
+`{"detail":"Not Found"}`, because that 404 never reaches the app's exception handler.
+
+**The rematch.** [`ai-version/w3/prompt-v2.md`](ai-version/w3/prompt-v2.md) adds seven
+paragraphs: close the connections, no `AUTOINCREMENT`, name the id in the 404, the four extra
+endpoints, the five query parameters with `sort` restricted by its type annotation, the
+timestamp columns and the title index, and WAL plus a 503 for a locked database. The regenerated
+[`ai-version/w3-v2/`](ai-version/w3-v2/) fixed every one of them: handles on `tasks.db` stayed
+at 0 across 200 requests, `sqlite_master` lists only `tasks`, `PRAGMA journal_mode` reports
+`wal`, `GET /tasks/999` answers `{"error":"Task 999 not found"}`, and `?sort=nope` answers
+`{"error":"sort: Input should be 'id' or 'title'"}`, the same message mine gives.
+
+It also made two calls I did not ask about, and told me it had made them: it keeps `created_at`
+and `updated_at` in the table but leaves them out of the JSON, reading "response shapes do not
+change" as the stronger instruction, where I chose to expose both. The v1 prompt was 1 page and
+produced a leak; the v2 prompt was 2 pages and produced code I would merge. The difference
+between them is not cleverness, it is the seven things I only knew to write down because I had
+already run the first version and watched a file handle counter go up.
+
 ## Week 2, for the record
 
 The in-memory version is still in the history, up to commit `122991e`. Its README ended with an
