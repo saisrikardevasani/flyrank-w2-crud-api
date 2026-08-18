@@ -27,6 +27,9 @@ def test_crud_cycle():
     assert updated.json() == {"id": task_id, "title": "Buy oat milk", "done": True}
     assert client.put("/tasks/99", json={"title": "x"}).status_code == 404
 
+    # A PUT without "done" must leave an already-finished task finished.
+    assert client.put("/tasks/1", json={"title": "Read the assignment"}).json()["done"] is True
+
     assert client.delete(f"/tasks/{task_id}").status_code == 204
     assert client.delete(f"/tasks/{task_id}").status_code == 404
     assert len(client.get("/tasks").json()) == 3

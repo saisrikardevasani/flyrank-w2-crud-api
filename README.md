@@ -126,7 +126,7 @@ actually showed up:
 | `POST /tasks -d '{}'` | 400 `{"error":"title: Field required"}` | 422 `{"detail":[{"type":"missing",...}]}` |
 | `POST /tasks -d '{"title":"   "}'` | 400, whitespace stripped first | 201, creates a task with a blank title |
 | `GET /tasks/99` | 404 `{"error":"Task 99 not found"}` | 404 `{"detail":"Task not found"}` |
-| `PUT /tasks/2 -d '{"title":"Walk the dog"}'` on a done task | stays `done:true` | silently resets to `done:false` |
+| `PUT` with only a `title`, on a task already `done:true` | stays `done:true` | silently resets to `done:false` |
 | `GET /` and `GET /health` | 200 | 404, neither exists |
 
 **What the AI did better.** It declared `response_model` on every route and stored tasks as
