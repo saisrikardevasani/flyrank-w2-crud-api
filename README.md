@@ -458,6 +458,157 @@ One mismatch is visible in that screenshot: the server response is `400 Undocume
 generates for a body-validated route. The app answers 400, so the generated docs and the running
 code disagree on that one line.
 
+## AI vs me, A3 (containerising the stack)
+
+I did stages 0 to 5 by hand, then wrote [`ai-version/a3/prompt-v1.md`](ai-version/a3/prompt-v1.md)
+from memory with the brief closed, and generated a whole containerised stack from that prompt
+alone. Its files are in [`ai-version/a3/`](ai-version/a3/), 148 lines of Python plus a
+Dockerfile, a compose file and a `.env.example`, unedited since they were generated, including
+both bugs below.
+
+### Does `docker compose up` work first try?
+
+No, and it failed twice for two unrelated reasons.
+
+**One.** Its compose file says `image: postgres` with no tag. That resolves to 18 now, which
+moved its data directory, so the database exited before it ever started:
+
+```console
+$ docker compose up -d --build
+$ docker compose ps -a
+SERVICE   STATUS
+api       Exited (3) 7 seconds ago
+db        Exited (1) 8 seconds ago
+```
+
+This is the same wall my own stage 0 hit, which is the only reason I recognised it in one look.
+
+**Two.** Pinning the tag to `postgres:17` from a separate override file, leaving its own files
+untouched, got the database up and the app still died:
+
+```console
+SERVICE   STATUS
+api       Exited (3) 9 seconds ago
+db        Up 10 seconds
+
+api-1  | psycopg.OperationalError: connection failed: connection to server at "172.20.0.2",
+api-1  |   port 5432 failed: Connection refused
+api-1  | ERROR:    Application startup failed. Exiting.
+```
+
+`depends_on: - db` waits for the container to start, not for Postgres to accept connections,
+and the app connects during startup. It lost the race, exited, and with no restart policy it
+stayed dead. Starting the API by hand a second time worked, which is exactly the "one command"
+the prompt asked for, spent twice.
+
+### With it running, the CRUD is right
+
+Every rule my prompt actually stated came out correct:
+
+| What I sent | Mine | AI v1 |
+|---|---|---|
+| `GET /tasks` | 200, three seeded tasks | 200, three seeded tasks |
+| `POST /tasks -d '{"title":"Buy milk"}'` | 201 | 201 |
+| `POST /tasks -d '{}'` | 400 `{"error":"title: Field required"}` | 400 `{"error":"Field required"}` |
+| `POST /tasks -d '{"title":"   "}'` | 400 | 400 `{"error":"Value error, title must not be empty"}` |
+| `GET /tasks/999` | 404 `{"error":"Task 999 not found"}` | 404 `{"error":"Task not found"}` |
+| `DELETE /tasks/4`, then again | 204, then 404 | 204, then 404 |
+| `PUT` with only a title, on a task already done | stays `done:true` | stays `done:true` |
+| `GET /`, `/health`, `/stats` | 200 | 404, none exist |
+| `GET /tasks?done=true` (3 tasks, 1 done) | 1 task | 3 tasks, the parameter is ignored |
+| Create, `docker compose down`, `up` | rows still there | rows still there |
+| Password in a committed file | no | no |
+
+The persistence and the secret handling are both right: it put the data on a named volume and
+read the password from `.env` through compose substitution, so nothing sensitive is in a file
+it would have committed.
+
+The `?done=true` row is the one that would bite in production. FastAPI accepts unknown query
+parameters silently, so its `GET /tasks?done=true` answers `200` with every task rather than
+`400` or a filtered list. A client would look correct and be wrong.
+
+### What it did better
+
+**Its app starts without a database.** It calls `db.init()` from a startup hook; mine calls it
+at import. So importing its module with nothing listening is fine, and importing mine is not:
+
+```console
+$ DATABASE_URL="postgresql://postgres:dev@localhost:5999/tasks" python -c "import main"     # mine
+psycopg.OperationalError: connection failed: ... port 5999 failed: Connection refused
+
+$ DATABASE_URL="postgresql://postgres:dev@localhost:5999/tasks" python -c "import main"     # its
+imported fine, no connection attempted
+```
+
+That is the difference between a test file that can import the app and one that cannot, and it
+is a straight design win I did not think about.
+
+**Its `.env.example` password is `changeme`; mine is `dev`.** Both work when copied, but one of
+them tells you it is a placeholder.
+
+**It put `EXPOSE 3000` in the Dockerfile.** Documentation rather than function, and mine has no
+equivalent line.
+
+### What it got wrong
+
+The unpinned image and the missing readiness gate, both above, and both of them the kind of
+thing that works on the machine where it was written and fails on the next one. It also left
+`requirements.txt` unpinned (`fastapi`, `uvicorn[standard]`, `psycopg[binary]`, no versions),
+so the image it builds next month is not the image it builds today.
+
+### What my prompt forgot
+
+Every one of those failures traces back to a sentence I did not write. I said "the official
+image" and never said pin a major version. I said "two services so that `docker compose up`
+starts both" and never said the app must wait for the database to be ready, because on my own
+stack I had already solved that with a health check and had stopped thinking about it. I said
+"their behaviour must not change" without quoting the 404 text or the 400 format, so it wrote
+sensible strings that no existing client would match. I never mentioned the four extra
+endpoints, the five query parameters, the timestamp columns, or what should happen when the
+database is unreachable.
+
+### The rematch
+
+[`ai-version/a3-v2/prompt-v2.md`](ai-version/a3-v2/prompt-v2.md) is the same prompt with seven
+paragraphs added, one per thing above. The regenerated
+[`ai-version/a3-v2/`](ai-version/a3-v2/) came up on the first `docker compose up` with no
+override and no second command, and all seven hold:
+
+```console
+$ docker compose ps
+SERVICE   STATUS
+api       Up Less than a second
+db        Up 6 seconds (healthy)
+
+$ curl -s localhost:3000/tasks/999
+{"error":"Task 999 not found"}
+$ curl -s -X POST localhost:3000/tasks -d '{}' -H "Content-Type: application/json"
+{"error":"title: Field required"}
+$ curl -s localhost:3000/health
+{"status":"ok","db":"ok"}
+$ curl -s 'localhost:3000/tasks?search=github'
+[{"id":3,"title":"Push it to GitHub",...}]
+$ curl -s 'localhost:3000/tasks?sort=id;%20DROP%20TABLE%20tasks'
+{"error":"sort: Input should be 'id' or 'title'"}
+$ curl -s -X POST localhost:3000/reset | python3 -c 'import sys,json;print([t["id"] for t in json.load(sys.stdin)])'
+[1, 2, 3]
+$ docker compose stop db && curl -s -o /dev/null -w '%{http_code}\n' localhost:3000/tasks
+503
+$ docker compose start db          # then a few seconds for Postgres to accept connections
+$ curl -s -o /dev/null -w '%{http_code}\n' localhost:3000/tasks
+200
+```
+
+One sentence on what changed: naming the version pin and the readiness condition turned a stack
+that needed two manual rescues into one that started on the first command, and the six lines of
+exact error text and endpoint behaviour turned a plausible API into the same API.
+
+The lesson is the one the assignment predicts, and running it is what made it concrete. The v1
+output was as good as the v1 prompt, and the v1 prompt was missing precisely the things I had
+already learned by hand and therefore no longer noticed I knew. I could only grade any of this
+because I had built the thing first: an unpinned `image: postgres` and a bare `depends_on` both
+look completely reasonable on the page.
+
 ## AI vs me, A2 (the move to SQLite)
 
 I did stages 0 to 5 by hand, then wrote [`ai-version/w3/prompt-v1.md`](ai-version/w3/prompt-v1.md)
