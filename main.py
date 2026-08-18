@@ -16,7 +16,7 @@ app = FastAPI(
 )
 
 # The three example tasks now live in db.py, which puts them in tasks.db on first run.
-# The write routes below still use this list; stages 2 and 3 move them onto SQL as well.
+# PUT and DELETE below still use this list; stage 3 moves them onto SQL as well.
 SEED = db.SEED
 tasks = [dict(t) for t in SEED]
 
@@ -93,13 +93,12 @@ def get_task(task_id: int):
 
 @app.post("/tasks", status_code=201, summary="Create a task")
 def create_task(body: TaskIn):
-    task = {
-        "id": max((t["id"] for t in tasks), default=0) + 1,
-        "title": body.title,
-        "done": bool(body.done),
-    }
-    tasks.append(task)
-    return task
+    """The database hands out the id; the client never sends one."""
+    with db.transaction() as conn:
+        cur = conn.execute(
+            "INSERT INTO tasks (title, done) VALUES (?, ?)", (body.title, bool(body.done))
+        )
+        return fetch(conn, cur.lastrowid)
 
 
 @app.put("/tasks/{task_id}", summary="Replace a task")
