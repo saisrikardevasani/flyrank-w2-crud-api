@@ -61,14 +61,9 @@ def root():
     return {"name": "Task API", "version": "1.0", "endpoints": ["/tasks"]}
 
 
-@app.get("/health", summary="Is the server alive, and can it reach the database?")
+@app.get("/health", summary="Is the server alive?")
 def health():
-    """Answers only after Postgres answers SELECT 1, so it fails when the database does."""
-    try:
-        db.ping()
-    except psycopg.Error as exc:
-        return JSONResponse(status_code=503, content={"status": "degraded", "db": str(exc)})
-    return {"status": "ok", "db": "ok"}
+    return {"status": "ok"}
 
 
 @app.get("/tasks", summary="List tasks, optionally filtered")

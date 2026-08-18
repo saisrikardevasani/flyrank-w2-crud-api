@@ -75,12 +75,44 @@ content-type: application/json
 
 [{"id":1,"title":"Read the assignment","done":true,"created_at":"2026-08-18T13:59:00.837806+00:00","updated_at":"2026-08-18T13:59:00.837806+00:00"},{"id":2,"title":"Build the CRUD API","done":false,"created_at":"2026-08-18T13:59:00.837806+00:00","updated_at":"2026-08-18T13:59:00.837806+00:00"},{"id":3,"title":"Push it to GitHub","done":false,"created_at":"2026-08-18T13:59:00.837806+00:00","updated_at":"2026-08-18T13:59:00.837806+00:00"}]
 
+$ curl -i -X POST http://localhost:3000/tasks -H "Content-Type: application/json" -d '{"title":"Buy milk"}'
+HTTP/1.1 201 Created
+content-type: application/json
+
+{"id":4,"title":"Buy milk","done":false,"created_at":"2026-08-18T13:59:36.279057+00:00","updated_at":"2026-08-18T13:59:36.279057+00:00"}
+
+$ curl -i -X POST http://localhost:3000/tasks -H "Content-Type: application/json" -d '{}'
+HTTP/1.1 400 Bad Request
+content-type: application/json
+
+{"error":"title: Field required"}
+
+$ curl -i -X PUT http://localhost:3000/tasks/4 -H "Content-Type: application/json" -d '{"title":"Buy oat milk","done":true}'
+HTTP/1.1 200 OK
+content-type: application/json
+
+{"id":4,"title":"Buy oat milk","done":true,"created_at":"2026-08-18T13:59:36.279057+00:00","updated_at":"2026-08-18T13:59:36.298393+00:00"}
+
+$ curl -i -X DELETE http://localhost:3000/tasks/4
+HTTP/1.1 204 No Content
+content-type: application/json
+
+
+$ curl -i -X DELETE http://localhost:3000/tasks/4
+HTTP/1.1 404 Not Found
+content-type: application/json
+
+{"error":"Task 4 not found"}
+
 $ curl -i http://localhost:3000/tasks/999
 HTTP/1.1 404 Not Found
 content-type: application/json
 
 {"error":"Task 999 not found"}
 ```
+
+A `PUT` moves `updated_at` and leaves `created_at` alone, which is the pair of timestamps
+above: `.279057` for both on create, `.298393` for the update.
 
 The `date`, `server` and `content-length` headers are trimmed out of every response above to
 keep it readable.
