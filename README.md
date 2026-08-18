@@ -182,9 +182,10 @@ Both of those ran while a separate connection held `BEGIN EXCLUSIVE` open.
 - **Stats**: `GET /stats` runs two `SELECT COUNT(*)` queries rather than counting in Python.
 - **Pagination**: `LIMIT ? OFFSET ?`, with limit capped at 100.
 
-Sorting and filtering moved out of Python entirely. `list_tasks` builds one query and returns
-whatever comes back, so `?sort=title&limit=2` now sorts the whole table and then takes two
-rows, where the Week 2 version sorted only the page it had already sliced.
+Filtering moved out of Python entirely, and sorting is new. The Week 2 `list_tasks` fetched the
+whole list, narrowed it with two Python loops and then sliced it; there was no `?sort=` at all.
+The current one builds a single query and returns whatever comes back, so `?sort=title&limit=2`
+orders the whole table before taking two rows rather than after.
 
 ### The index
 
