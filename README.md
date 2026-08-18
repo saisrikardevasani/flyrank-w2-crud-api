@@ -1,27 +1,98 @@
-# Task API (FlyRank W2 / A1)
+# Task API (FlyRank W2 + W3)
 
-A small to-do API built with FastAPI: create, read, update and delete tasks. Tasks live in a
-Python list inside the running process, so there is no database and a restart puts the list
-back to the three examples it starts with. That is the point of the exercise, and
-[the mortality experiment](#the-mortality-experiment) below shows what it costs.
+A small to-do API built with FastAPI: create, read, update and delete tasks. Week 2 kept the
+tasks in a Python list, so every restart threw them away. Week 3 moved the same five endpoints
+onto a SQLite file called `tasks.db`. The requests and the responses did not change; the data
+now outlives the process.
 
 FastAPI generates Swagger UI from the code, so the interactive docs sit at
 http://localhost:8000/docs with nothing extra installed.
 
 ## Run it
 
-You need Python 3.10 or newer (`python3 --version` tells you). From a clean checkout:
+You need Python 3.10 or newer (`python3 --version` tells you). From a clean checkout, one
+command:
 
 ```bash
 python3 -m venv .venv && .venv/bin/pip install -r requirements.txt && .venv/bin/uvicorn main:app --reload
 ```
 
+There is no database step. `tasks.db` does not exist in the repo; `db.init()` creates the file,
+the `tasks` table, the index and the three example rows on the first request that needs them.
+
 Open http://localhost:8000/docs and hit **Try it out** on any endpoint.
 
-If your `python3` is older, point the first step at a newer one (`python3.11 -m venv .venv`)
-and leave the rest of the command alone.
+To run the checks: `.venv/bin/python test_api.py`, which prints `all checks passed`. It calls
+`POST /reset` first, so it leaves `tasks.db` holding the three example tasks.
 
-To run the checks: `.venv/bin/python test_api.py`, which prints `all checks passed`.
+## Why SQLite
+
+- **It is one file.** `tasks.db` sits next to `main.py`. Copying the file copies the data.
+- **There is nothing to install or start.** `sqlite3` ships with Python, and SQLite has no
+  server process, no port and no user accounts. The Week 2 run command still works unchanged.
+- **The data survives a restart**, a crash and a laptop lid closing, which a Python list does
+  not.
+
+`tasks.db` is git-ignored (along with the `-wal` and `-shm` files SQLite writes beside it), so
+every clone starts from the same three seeded tasks rather than from my test data.
+
+## Proof: the same responses, now from disk
+
+```console
+$ curl -i http://localhost:3000/tasks
+HTTP/1.1 200 OK
+content-type: application/json
+
+[{"id":1,"title":"Read the assignment","done":true,"created_at":"2026-08-18 13:17:40","updated_at":"2026-08-18 13:17:40"},{"id":2,"title":"Build the CRUD API","done":false,"created_at":"2026-08-18 13:17:40","updated_at":"2026-08-18 13:17:40"},{"id":3,"title":"Push it to GitHub","done":false,"created_at":"2026-08-18 13:17:40","updated_at":"2026-08-18 13:17:40"}]
+
+$ curl -i -X POST http://localhost:3000/tasks -H "Content-Type: application/json" -d '{"title":"Buy milk"}'
+HTTP/1.1 201 Created
+content-type: application/json
+
+{"id":4,"title":"Buy milk","done":false,"created_at":"2026-08-18 13:17:43","updated_at":"2026-08-18 13:17:43"}
+
+$ curl -i -X POST http://localhost:3000/tasks -H "Content-Type: application/json" -d '{}'
+HTTP/1.1 400 Bad Request
+content-type: application/json
+
+{"error":"title: Field required"}
+
+$ curl -i -X PUT http://localhost:3000/tasks/4 -H "Content-Type: application/json" -d '{"title":"Buy oat milk","done":true}'
+HTTP/1.1 200 OK
+content-type: application/json
+
+{"id":4,"title":"Buy oat milk","done":true,"created_at":"2026-08-18 13:17:43","updated_at":"2026-08-18 13:17:43"}
+
+$ curl -i -X DELETE http://localhost:3000/tasks/4
+HTTP/1.1 204 No Content
+content-type: application/json
+
+
+$ curl -i http://localhost:3000/tasks/999
+HTTP/1.1 404 Not Found
+content-type: application/json
+
+{"error":"Task 999 not found"}
+```
+
+The `date`, `server` and `content-length` headers are trimmed out of every response above to
+keep it readable.
+
+### Persistence, the point of the week
+
+```console
+$ curl -s -X POST localhost:3000/tasks -H "Content-Type: application/json" -d '{"title":"Survive a restart"}'
+{"id":4,"title":"Survive a restart","done":false,"created_at":"2026-08-18 13:17:54","updated_at":"2026-08-18 13:17:54"}
+
+# stop the server (Ctrl-C), start it again, ask for the same task
+$ curl -s localhost:3000/tasks/4
+{"id":4,"title":"Survive a restart","done":false,"created_at":"2026-08-18 13:17:54","updated_at":"2026-08-18 13:17:54"}
+```
+
+Second proof, from outside the API: `docs/db-browser.png` below is `tasks.db` opened in DB
+Browser for SQLite, showing the same rows as a spreadsheet.
+
+![The tasks table open in DB Browser for SQLite](docs/db-browser.png)
 
 ## Endpoints
 
@@ -29,61 +100,133 @@ To run the checks: `.venv/bin/python test_api.py`, which prints `all checks pass
 |---|---|---|---|---|
 | GET | `/` | What this API is | 200 | |
 | GET | `/health` | Liveness check, returns `{"status":"ok"}` | 200 | |
-| GET | `/tasks` | List tasks. Optional `?done=`, `?search=`, `?limit=`, `?offset=` | 200 | 400 bad query |
+| GET | `/tasks` | List tasks. Optional `?done=`, `?search=`, `?sort=`, `?limit=`, `?offset=` | 200 | 400 bad query |
 | GET | `/tasks/{id}` | One task | 200 | 404 unknown id |
 | POST | `/tasks` | Create from `{"title": "Buy milk"}` | 201 | 400 missing or empty title |
 | PUT | `/tasks/{id}` | Replace `title`, optionally `done` | 200 | 400 invalid body, 404 unknown id |
 | DELETE | `/tasks/{id}` | Remove it, empty body | 204 | 404 unknown id |
-| GET | `/stats` | `{"total":3,"done":1,"open":2}` | 200 | |
-| POST | `/reset` | Restore the three example tasks | 200 | |
+| GET | `/stats` | `{"total":3,"done":1,"open":2}`, counted with `SELECT COUNT(*)` | 200 | |
+| POST | `/reset` | Empty the table and seed it again | 200 | |
 
-A task looks like `{"id": 1, "title": "Read the assignment", "done": true}`. Every error comes
-back in the same shape, `{"error": "..."}`, whatever went wrong.
+A task looks like
+`{"id":1,"title":"Read the assignment","done":true,"created_at":"2026-08-18 13:17:40","updated_at":"2026-08-18 13:17:40"}`.
+Every error comes back in the same shape, `{"error": "..."}`, whatever went wrong. The 404 text
+keeps the Week 2 wording (`Task 999 not found` rather than `Task not found`) because the point
+of this week was to change the storage and nothing else.
 
-## Proof: the full CRUD cycle in curl
+## The table
 
-```console
-$ curl -i http://localhost:8000/tasks
-HTTP/1.1 200 OK
-content-type: application/json
-
-[{"id":1,"title":"Read the assignment","done":true},{"id":2,"title":"Build the CRUD API","done":false},{"id":3,"title":"Push it to GitHub","done":false}]
-
-$ curl -i -X POST http://localhost:8000/tasks -H "Content-Type: application/json" -d '{"title":"Buy milk"}'
-HTTP/1.1 201 Created
-content-type: application/json
-
-{"id":4,"title":"Buy milk","done":false}
-
-$ curl -i -X POST http://localhost:8000/tasks -H "Content-Type: application/json" -d '{}'
-HTTP/1.1 400 Bad Request
-content-type: application/json
-
-{"error":"title: Field required"}
-
-$ curl -i http://localhost:8000/tasks/4
-HTTP/1.1 200 OK
-content-type: application/json
-
-{"id":4,"title":"Buy milk","done":false}
-
-$ curl -i -X PUT http://localhost:8000/tasks/4 -H "Content-Type: application/json" -d '{"title":"Buy oat milk","done":true}'
-HTTP/1.1 200 OK
-content-type: application/json
-
-{"id":4,"title":"Buy oat milk","done":true}
-
-$ curl -i -X DELETE http://localhost:8000/tasks/4
-HTTP/1.1 204 No Content
-
-$ curl -i http://localhost:8000/tasks/99
-HTTP/1.1 404 Not Found
-content-type: application/json
-
-{"error":"Task 99 not found"}
+```sql
+CREATE TABLE IF NOT EXISTS tasks (
+  id INTEGER PRIMARY KEY,
+  title TEXT NOT NULL,
+  done INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS tasks_title ON tasks (title);
 ```
 
-The `date` and `server` headers are trimmed out of every response above to keep it readable.
+`id INTEGER PRIMARY KEY` makes SQLite hand out the ids, so a client never sends one. SQLite has
+no boolean type, so `done` is stored as 0 or 1 and `db.to_task()` turns it back into `true` or
+`false` on the way out.
+
+Every value reaches SQLite as a `?` parameter. A column name cannot be a parameter, so `?sort=`
+is typed as `Literal["id", "title"]` and FastAPI rejects anything else before the query is
+built:
+
+```console
+$ curl -s 'http://localhost:3000/tasks?sort=id;%20DROP%20TABLE%20tasks'
+{"error":"sort: Input should be 'id' or 'title'"}
+```
+
+## Talking to the database by hand
+
+`docs/sql-execute.png` is DB Browser's Execute SQL tab. The query is
+`SELECT * FROM tasks WHERE done = 1;` and it returned one row, `Read the assignment`, in 8ms,
+which is the same single task `GET /tasks?done=true` answers with.
+
+![SELECT * FROM tasks WHERE done = 1 in DB Browser](docs/sql-execute.png)
+
+Running `UPDATE tasks SET done = 1;` in DB Browser and pressing **Write Changes** made
+`GET /tasks` return all three tasks as done, with the server left running the whole time.
+`DELETE FROM tasks WHERE done = 1;` then made it return `[]`. There is no syncing step: DB
+Browser and the API open the same file.
+
+That experiment also found a bug. While DB Browser held the change unsaved, it kept a write
+lock on the file and every request came back as a 500. `db.init()` now switches the database
+into WAL mode, where a reader never waits for a writer, and a write that really is blocked
+answers `503 {"error": "Database unavailable: database is locked"}` instead of a bare
+`Internal Server Error`:
+
+```console
+$ curl -s -o /dev/null -w '%{http_code}\n' http://localhost:3000/tasks
+200
+$ curl -s -X POST http://localhost:3000/tasks -H "Content-Type: application/json" -d '{"title":"blocked"}'
+{"error":"Database unavailable: database is locked"}
+```
+
+Both of those ran while a separate connection held `BEGIN EXCLUSIVE` open.
+
+## Extras
+
+- **Filter**: `GET /tasks?done=true` becomes `WHERE done = ?`.
+- **Search**: `GET /tasks?search=git` becomes `WHERE title LIKE ?` with `%git%`. SQLite's LIKE
+  ignores case for ASCII, so it still matches `Push it to GitHub`, as the list version did.
+- **Sort**: `GET /tasks?sort=title` adds `ORDER BY title`.
+- **Stats**: `GET /stats` runs two `SELECT COUNT(*)` queries rather than counting in Python.
+- **Pagination**: `LIMIT ? OFFSET ?`, with limit capped at 100.
+
+Sorting and filtering moved out of Python entirely. `list_tasks` builds one query and returns
+whatever comes back, so `?sort=title&limit=2` now sorts the whole table and then takes two
+rows, where the Week 2 version sorted only the page it had already sliced.
+
+### The index
+
+```console
+$ sqlite3 tasks.db 'EXPLAIN QUERY PLAN SELECT * FROM tasks ORDER BY title LIMIT 50 OFFSET 0;'
+QUERY PLAN
+`--SCAN tasks USING INDEX tasks_title
+
+$ sqlite3 tasks.db "EXPLAIN QUERY PLAN SELECT * FROM tasks WHERE title LIKE '%git%' ORDER BY id LIMIT 50 OFFSET 0;"
+QUERY PLAN
+`--SCAN tasks
+```
+
+An index is a second copy of one column kept in sorted order, so the database can find or order
+rows without reading all of them. The interesting half is the second plan: `LIKE '%git%'` starts
+with a wildcard, and an index sorted by title cannot help you find words in the middle of a
+title, so the search still scans every row. The index earns its keep on `ORDER BY title`, not
+on the query I added it for.
+
+### The transaction
+
+`db.init()` seeds inside one transaction, so the three example tasks arrive together or not at
+all. If the process died between the second and third insert, a half-seeded table would look
+"not empty" on the next start and would never be repaired, because the seed only runs when the
+count is 0.
+
+### Timestamps, and why migrations exist
+
+Adding `created_at` and `updated_at` was two words in `CREATE TABLE` for a new database and
+nothing at all for anyone cloning fresh. My own `tasks.db` already had rows, and `CREATE TABLE
+IF NOT EXISTS` skips a table that exists, so the new columns simply did not appear and every
+query broke on the old file. The fix is `db.migrate()`: read `PRAGMA table_info(tasks)`, add
+each missing column, then fill it, which is a hand-rolled version of what a migration tool
+does. SQLite also refuses a non-constant `DEFAULT` on `ALTER TABLE ADD COLUMN`, so backfilling
+the existing rows needs its own `UPDATE`.
+
+## Storage is an implementation detail
+
+The Week 2 test file was written against the in-memory version. At commit `4ff2a50`, the last
+stage before the extras, it was run against the SQLite version with no edit at all and printed
+`all checks passed`. Same assertions, same status codes, same JSON, different storage.
+
+That is the whole argument in one command. The tests describe the promise the API makes, so
+they cannot tell whether a task lives in a list or on disk; only the storage layer changed, and
+it is not the storage layer that clients depend on. The tests did change later, but for a
+different reason: the timestamps extra added two fields to the response, which is a change to
+the promise rather than to where it is kept.
 
 ## Swagger UI
 
@@ -91,37 +234,27 @@ Every endpoint is listed, and **Try it out** sends the real request:
 
 ![Swagger UI at /docs](docs/swagger-ui.png)
 
-Posting an empty body through **Try it out**, which is the validation rule of stage 3 seen from
-the browser rather than from curl:
+Posting an empty body through **Try it out**, the validation rule seen from the browser rather
+than from curl:
 
 ![POST /tasks with an empty body, answered with 400](docs/swagger-tryit.png)
 
-## Extras
+## Week 2, for the record
 
-- **Filtering**: `GET /tasks?done=true` returns only the finished ones.
-- **Search**: `GET /tasks?search=github` matches on the title, ignoring case.
-- **Stats**: `GET /stats` counts rather than stores, so it cannot drift out of date.
-- **Seed and reset**: `POST /reset` puts the three example tasks back.
-- **Pagination**: `GET /tasks?limit=2&offset=2`, with limit capped at 100. A list endpoint with
-  no cap returns more data every week it stays in production, and the day it finally times out
-  it times out for every client at once.
+The in-memory version is still in the history, up to commit `122991e`. Its README ended with an
+experiment: add a fourth task, stop the server, start it again, ask for `GET /tasks`. The list
+was back to three and the fourth was gone, because the tasks only ever existed as Python objects
+inside one process. Killing the process killed the data. Everything above is the answer to that.
 
-### The mortality experiment
 
-I added a fourth task, stopped the server, started it again and asked for `GET /tasks`. The
-list was back to the three seeded tasks and the fourth was gone.
+## AI vs me, week 2 (the in-memory API)
 
-The tasks only ever existed as Python objects inside one process, so killing the process killed
-the data. Any storage that has to survive a deploy, a crash or a laptop lid closing has to live
-somewhere other than the program's memory, which is the argument for next week's database.
-
-## AI vs me
-
-Stages 0 to 6 above are hand-written. After finishing them I wrote a prompt from memory, asked
+Week 2's stages are hand-written. After finishing them I wrote a prompt from memory, asked
 Claude to build the same API from that prompt alone, and kept its output in
 [`ai-version/`](ai-version/) so my own code stays untouched. The full prompt is
 [`ai-version/prompt-v1.md`](ai-version/prompt-v1.md); the generated code is
-[`ai-version/main_v1.py`](ai-version/main_v1.py), 82 lines against my 117.
+[`ai-version/main_v1.py`](ai-version/main_v1.py), 82 lines against the 117 of my
+in-memory `main.py`.
 
 I ran it on port 8200 and fired my Stage 4 checkpoint curls at it. Five differences that
 actually showed up:
@@ -160,7 +293,7 @@ sentence being ambiguous, not the model being careless.
 covering the error envelope, the 400 mapping, whitespace stripping, the two extra endpoints,
 the optional `done` on `PUT`, and response models;
 [`ai-version/main_v2.py`](ai-version/main_v2.py) then matched my hand-built behaviour on every
-probe above, at 116 lines against my 117. `git diff --no-index main.py ai-version/main_v2.py`
+probe above, at 116 lines against that same 117. `git diff --no-index main.py ai-version/main_v2.py`
 still reports 145 changed lines, but two structural choices account for most of them: it keeps
 tasks as Pydantic `Task` objects where I keep plain dicts, and it has no `/stats`, `/reset`,
 filtering or pagination, because prompt v2 never asked for the extras.
@@ -171,7 +304,12 @@ knew which six sentences were missing.
 
 ## Notes on the implementation
 
-Validation lives in one Pydantic model, `TaskIn`, and error formatting lives in two exception
+`db.py` holds every SQL string and the connection handling, 73 lines of it; `main.py` holds the
+routes and validation and never mentions `sqlite3` except in the handler that catches a locked
+database. Each request opens its own connection, because SQLite connections are cheap to open
+and sharing one across uvicorn's worker threads is not safe.
+
+Validation lives in one Pydantic model, `TaskIn`, and error formatting lives in three exception
 handlers, so every route answers in `{"error": "..."}` without any route repeating that logic.
 FastAPI's own default for a bad body is 422; the handler maps it to the 400 this assignment
 asks for.
