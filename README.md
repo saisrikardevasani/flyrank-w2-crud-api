@@ -235,14 +235,19 @@ the promise rather than to where it is kept.
 
 ## Swagger UI
 
-Every endpoint is listed, and **Try it out** sends the real request:
+Every endpoint is listed, and **Try it out** sends the real request. Both screenshots below came
+from headless Chrome driving the page against the running app, not from a hand-taken snap:
 
-![Swagger UI at /docs](docs/swagger-ui.png)
+![Swagger UI at /docs, listing all nine endpoints](docs/swagger-ui.png)
 
-Posting an empty body through **Try it out**, the validation rule seen from the browser rather
-than from curl:
+Posting `{}` through **Try it out** on `POST /tasks`, which answered `400` with
+`{"error": "title: Field required"}`:
 
 ![POST /tasks with an empty body, answered with 400](docs/swagger-tryit.png)
+
+One mismatch is visible in that screenshot: the "Responses" table still declares `422 Validation
+Error`, because that is what FastAPI generates for a body-validated route. The app answers 400,
+so the generated docs and the running code disagree on that one line.
 
 ## AI vs me, week 3 (the move to SQLite)
 

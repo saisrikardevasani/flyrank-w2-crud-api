@@ -50,7 +50,9 @@ async def busy_database(request, exc: sqlite3.OperationalError):
 async def invalid_body(request, exc: RequestValidationError):
     """A body that fails validation is the client's fault: 400, not FastAPI's 422."""
     problem = exc.errors()[0]
-    field = ".".join(str(part) for part in problem["loc"][1:]) or "body"
+    # loc looks like ("body", "title") for a field, or ("body", 39) for malformed JSON,
+    # where 39 is a character offset. Dropping the numbers keeps the message readable.
+    field = ".".join(p for p in problem["loc"][1:] if isinstance(p, str)) or "body"
     return JSONResponse(status_code=400, content={"error": f"{field}: {problem['msg']}"})
 
 
