@@ -18,6 +18,11 @@ That builds the app image, starts Postgres, waits until it is accepting connecti
 the `tasks` table and seeds the three example tasks. The API answers on
 http://localhost:3000 and Swagger UI is at http://localhost:3000/docs.
 
+Measured on a fresh clone of this repo into an empty directory: 9.2 seconds from
+`cp .env.example .env && docker compose up` to `GET /tasks` returning the three seeded tasks,
+with no database step in between. Docker's layer cache and the `postgres:17` image were already
+warm on that machine; the first run anywhere pays for the image pull as well.
+
 `docker compose down` stops both containers and keeps the data. `docker compose down -v` also
 deletes the volume, which is the only way to lose it.
 
