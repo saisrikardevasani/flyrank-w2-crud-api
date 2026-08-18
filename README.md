@@ -155,8 +155,10 @@ sentence being ambiguous, not the model being careless.
 covering the error envelope, the 400 mapping, whitespace stripping, the two extra endpoints,
 the optional `done` on `PUT`, and response models;
 [`ai-version/main_v2.py`](ai-version/main_v2.py) then matched my hand-built behaviour on every
-probe above, at 116 lines against my 117 and a `git diff --no-index` of 72 changed lines that
-are almost entirely naming and ordering.
+probe above, at 116 lines against my 117. `git diff --no-index main.py ai-version/main_v2.py`
+still reports 145 changed lines, but two structural choices account for most of them: it keeps
+tasks as Pydantic `Task` objects where I keep plain dicts, and it has no `/stats`, `/reset`,
+filtering or pagination, because prompt v2 never asked for the extras.
 
 The thing worth keeping from this stage: the second prompt is not smarter than the first, it is
 just more specific, and I could only write it because I had already built the thing by hand and
