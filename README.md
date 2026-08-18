@@ -9,11 +9,14 @@ Interactive docs (Swagger UI) come free with FastAPI at **http://localhost:8000/
 
 ## Run it
 
-One command, from a clean checkout (needs Python 3.10+):
+Needs **Python 3.10+** (check with `python3 --version`). One command, from a clean checkout:
 
 ```bash
 python3 -m venv .venv && .venv/bin/pip install -r requirements.txt && .venv/bin/uvicorn main:app --reload
 ```
+
+If your `python3` is older, point the first step at a newer one — e.g. `python3.11 -m venv .venv`
+— and the rest of the command is unchanged.
 
 Then open http://localhost:8000/docs and click **Try it out** on any endpoint.
 
