@@ -5,11 +5,14 @@ services:
     environment:
       # Inside the compose network the database answers to its service name, not localhost.
       DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
+      REDIS_URL: redis://redis:6379
     depends_on:
       db:
-        # Not just "started": the app creates its table on import, so it needs a database
+        # "started" is not enough: the app creates its table on import, so it needs a database
         # that is accepting connections, and Postgres accepts them a moment after it starts.
         condition: service_healthy
+      redis:
+        condition: service_started
 
   db:
     image: postgres:17
@@ -26,6 +29,12 @@ services:
       interval: 2s
       timeout: 3s
       retries: 15
+
+  redis:
+    # Nothing uses it yet. The app pings it once at startup so that when a later week adds
+    # caching, the wiring is already known to work.
+    image: redis:7-alpine
+    ports: ["6379:6379"]
 
 volumes:
   taskdata:

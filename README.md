@@ -61,12 +61,13 @@ explanation; point the first step at a newer interpreter and leave the rest alon
 To run the checks: `.venv/bin/python test_api.py`, which prints `all checks passed`. It calls
 `POST /reset` first, so it leaves the table holding the three example tasks.
 
-## The two services
+## The three services
 
 ```yaml
 services:
-  api:   # built from the Dockerfile, uvicorn on 3000
-  db:    # the official postgres:17 image, data on a named volume
+  api:     # built from the Dockerfile, uvicorn on 3000
+  db:      # the official postgres:17 image, data on a named volume
+  redis:   # added in the extras, pinged once at startup, otherwise unused
 ```
 
 The tag is pinned. `postgres:latest` is 18, which moved its data directory and refuses to start
@@ -290,6 +291,137 @@ own `tasks.db` predated the timestamp columns. A3 starts from an empty volume, s
 is gone rather than ported. The lesson it taught still stands: the second time you change a
 table, you need migrations, and every database gets a second time.
 
+## Extras
+
+None of these were required. Each one is a thing the database can now do that a file could not.
+
+### The mortality experiment
+
+Same Postgres image, same commands, no `-v` flag:
+
+```console
+$ docker run --name mortal -e POSTGRES_PASSWORD=dev -e POSTGRES_DB=tasks -p 5433:5432 -d postgres:17
+$ docker exec mortal psql -U postgres -d tasks -c "INSERT INTO tasks (title) VALUES ('I will not survive'), ('nor will I');"
+INSERT 0 2
+$ docker exec mortal psql -U postgres -d tasks -c "SELECT * FROM tasks;"
+ id |       title
+----+--------------------
+  1 | I will not survive
+  2 | nor will I
+(2 rows)
+
+$ docker rm -f mortal
+$ docker run --name mortal ... -d postgres:17        # same command again
+$ docker exec mortal psql -U postgres -d tasks -c '\dt'
+Did not find any relations.
+```
+
+A container's own filesystem is a scratch layer that is deleted with the container, so rows
+written into it die with it. A volume is storage that Docker keeps outside the container and
+hands to whichever container asks for it next, which is why `taskdata:/var/lib/postgresql/data`
+is the difference between the run above and `docker compose down && docker compose up`.
+
+### A health check that means something
+
+```console
+$ curl -s localhost:3000/health
+{"status":"ok","db":"ok"}
+
+$ docker compose stop db
+$ curl -i localhost:3000/tasks
+HTTP/1.1 503 Service Unavailable
+
+{"error":"Database unavailable: failed to resolve host 'db': [Errno -2] Name or service not known"}
+
+$ docker compose start db
+$ curl -s -o /dev/null -w '%{http_code}\n' localhost:3000/tasks
+200
+```
+
+`/health` runs `SELECT 1` rather than returning a constant. A load balancer polls it every few
+seconds and takes an instance out of rotation while it fails, so an app that is running but
+cannot reach its database stops receiving traffic instead of answering every request with a
+500. A health check that only proves the process is alive would keep sending traffic to it.
+
+The app also recovered on its own when the database came back, with no restart, because each
+request opens its own connection.
+
+### The index on `done`
+
+50,000 rows, 1% of them done, `EXPLAIN ANALYZE` before and after `CREATE INDEX tasks_done`:
+
+```console
+-- before
+=> EXPLAIN ANALYZE SELECT count(*) FROM tasks WHERE done = true;
+ Aggregate  (actual time=1.458..1.458 rows=1 loops=1)
+   ->  Seq Scan on tasks  (actual time=0.004..1.438 rows=501 loops=1)
+         Filter: done
+         Rows Removed by Filter: 49502
+ Execution Time: 1.480 ms
+
+-- after
+=> EXPLAIN ANALYZE SELECT count(*) FROM tasks WHERE done = true;
+ Aggregate  (actual time=0.311..0.311 rows=1 loops=1)
+   ->  Index Only Scan using tasks_done on tasks  (actual time=0.015..0.295 rows=501 loops=1)
+         Index Cond: (done = true)
+ Execution Time: 0.328 ms
+```
+
+1.480 ms to 0.328 ms, and the scan stopped reading 49,502 rows it was going to throw away.
+
+The more interesting result is the query the API actually runs, which has `ORDER BY id LIMIT
+50`. There the index made it slightly slower, 0.281 ms to 0.339 ms:
+
+```console
+-- before: walks the primary key in id order and stops after 50 matches
+ Limit  (actual time=0.008..0.268 rows=50 loops=1)
+   ->  Index Scan using tasks_pkey on tasks  (actual time=0.008..0.265 rows=50 loops=1)
+         Filter: done
+ Execution Time: 0.281 ms
+
+-- after: finds all 501 matches, then sorts them to get the first 50 by id
+ Limit  (actual time=0.322..0.326 rows=50 loops=1)
+   ->  Sort  (actual time=0.322..0.323 rows=50 loops=1)
+         Sort Key: id
+         Sort Method: top-N heapsort  Memory: 28kB
+         ->  Index Scan using tasks_done on tasks  (actual time=0.006..0.295 rows=501 loops=1)
+ Execution Time: 0.339 ms
+```
+
+An index that helps the count hurts the paginated list, because the primary key was already
+delivering rows in the order the query wanted and a `LIMIT` lets the database stop early. An
+index on `(done, id)` would serve both, which is the general lesson: index the query, not the
+column.
+
+### Redis, one PING
+
+`compose.yaml` has a third service, `redis:7-alpine`, and the app pings it once at startup:
+
+```console
+$ docker compose logs api | grep redis
+api-1  | INFO:     redis: +PONG
+```
+
+Nothing caches anything yet, so [`cache.py`](cache.py) writes `PING\r\n` to the socket and
+reads the reply instead of adding a client library for one round trip. When something actually
+stores a value, that is when the real client earns its place in `requirements.txt`. A failed
+ping logs a warning and the app carries on, because Redis is not on the request path.
+
+### The multi-stage image
+
+| Dockerfile | Image size |
+|---|---|
+| Single stage, `pip install` into the runtime image | 317MB |
+| Multi-stage, build a virtualenv and copy `/venv` | 337MB |
+| Multi-stage, `pip install --prefix=/install` and copy it | 300MB |
+
+The middle row is the one worth keeping. Multi-stage is not automatically smaller: copying a
+virtualenv into an image that already ships its own `pip` and `setuptools` adds 20MB rather
+than saving any, because `psycopg[binary]` installs from a wheel and there was no compiler or
+header package in the build stage to leave behind. Staging the install with `--prefix` and
+copying only that does save 17MB, and it is the shape that pays off properly the day a
+dependency does need building.
+
 ## Storage is an implementation detail
 
 [`test_api.py`](test_api.py) was written against the in-memory A1 version. It was run against
@@ -302,6 +434,11 @@ describe the promise the API makes to a client, and a client cannot tell whether
 list, a file or a server on another host. That is what "storage is an implementation detail"
 means, and A15 (layered architecture) is the assignment that makes the boundary formal instead
 of a rule I keep by hand.
+
+One assertion in that file did change afterwards, and for the opposite reason. The extras made
+`/health` report on the database as well, so `{"status": "ok"}` became
+`{"status": "ok", "db": "ok"}`. That is a change to the promise, not to where the data is kept,
+and it is the only line in the file A3 touched.
 
 ## Swagger UI
 
@@ -457,9 +594,9 @@ knew which six sentences were missing.
 
 ## Notes on the implementation
 
-`db.py` holds every SQL string and the connection handling, 138 lines of it; `main.py` holds the
-routes and validation in 110 lines and never mentions `psycopg` except in the handler that
-catches a database it cannot reach. Each request opens its own connection. Postgres connections
+`db.py` holds every SQL string and the connection handling, 144 lines of it; `main.py` holds the
+routes and validation in 122 lines and never mentions `psycopg` except in the handler that
+catches a database it cannot reach, and `cache.py` is 32 lines for one Redis PING. Each request opens its own connection. Postgres connections
 cost milliseconds rather than SQLite's microseconds, which is affordable at this size; a pool
 (`psycopg_pool`) is the upgrade if the request rate ever makes it matter.
 

@@ -62,6 +62,12 @@ def init() -> None:
             )
 
 
+def ping() -> bool:
+    """Ask the database to answer one trivial query. This is what GET /health reports on."""
+    with transaction() as conn:
+        return conn.execute("SELECT 1 AS one").fetchone()["one"] == 1
+
+
 def list_tasks(done=None, search=None, sort="id", limit=50, offset=0) -> list[dict]:
     """Filter, search and sort in SQL. Python never loops over rows to throw them away.
 

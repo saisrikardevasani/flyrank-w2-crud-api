@@ -6,9 +6,11 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, StringConstraints
 
+import cache
 import db
 
 db.init()
+cache.ping_at_startup()
 
 app = FastAPI(
     title="Task API",
@@ -61,9 +63,19 @@ def root():
     return {"name": "Task API", "version": "1.0", "endpoints": ["/tasks"]}
 
 
-@app.get("/health", summary="Is the server alive?")
+@app.get("/health", summary="Is the server alive, and can it reach the database?")
 def health():
-    return {"status": "ok"}
+    """Answers ok only after Postgres answers SELECT 1.
+
+    A load balancer polls this and takes the instance out of rotation while it fails, so an
+    app that is running but cannot reach its database stops receiving traffic instead of
+    serving errors. That is why it checks the dependency rather than returning a constant.
+    """
+    try:
+        db.ping()
+    except psycopg.Error as exc:
+        return JSONResponse(status_code=503, content={"status": "degraded", "db": str(exc)})
+    return {"status": "ok", "db": "ok"}
 
 
 @app.get("/tasks", summary="List tasks, optionally filtered")

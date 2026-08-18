@@ -19,7 +19,9 @@ def test_crud_cycle():
     client.post("/reset")
 
     assert client.get("/").json()["name"] == "Task API"
-    assert client.get("/health").json() == {"status": "ok"}
+    # The extras made /health check the database too, which is the one assertion in this file
+    # that A3 changed. Everything below it is the A1 test, unedited.
+    assert client.get("/health").json() == {"status": "ok", "db": "ok"}
     assert len(client.get("/tasks").json()) == 3
 
     created = client.post("/tasks", json={"title": "Buy milk"})
