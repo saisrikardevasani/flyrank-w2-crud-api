@@ -16,7 +16,7 @@ app = FastAPI(
 )
 
 # The three example tasks now live in db.py, which puts them in tasks.db on first run.
-# The routes below still read this list; the next stages move them onto SQL one at a time.
+# The write routes below still use this list; stages 2 and 3 move them onto SQL as well.
 SEED = db.SEED
 tasks = [dict(t) for t in SEED]
 
@@ -29,11 +29,19 @@ class TaskIn(BaseModel):
 
 
 def find(task_id: int):
-    """Return the task with this id, or raise a 404."""
+    """Return the in-memory task with this id, or raise a 404. Stage 3 retires this."""
     for task in tasks:
         if task["id"] == task_id:
             return task
     raise HTTPException(404, f"Task {task_id} not found")
+
+
+def fetch(conn, task_id: int) -> dict:
+    """Read one row by id, or raise a 404. The id travels as a parameter, never as text."""
+    row = conn.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()
+    if row is None:
+        raise HTTPException(404, f"Task {task_id} not found")
+    return db.to_task(row)
 
 
 @app.exception_handler(HTTPException)
@@ -68,7 +76,8 @@ def list_tasks(
     offset: int = Query(0, ge=0),
 ):
     """limit/offset is capped at 100 so this never returns an unbounded list."""
-    found = tasks
+    with db.transaction() as conn:
+        found = [db.to_task(row) for row in conn.execute("SELECT * FROM tasks")]
     if done is not None:
         found = [t for t in found if t["done"] == done]
     if search:
@@ -78,7 +87,8 @@ def list_tasks(
 
 @app.get("/tasks/{task_id}", summary="Get one task by id")
 def get_task(task_id: int):
-    return find(task_id)
+    with db.transaction() as conn:
+        return fetch(conn, task_id)
 
 
 @app.post("/tasks", status_code=201, summary="Create a task")
