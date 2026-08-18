@@ -5,7 +5,11 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, StringConstraints
 
-app = FastAPI()
+app = FastAPI(
+    title="Task API",
+    version="1.0",
+    description="A tiny to-do API. Tasks live in memory, so a restart wipes them.",
+)
 
 # In-memory "database" — a plain list. Restarting the server resets it.
 tasks = [
@@ -44,27 +48,27 @@ async def invalid_body(request, exc: RequestValidationError):
     return JSONResponse(status_code=400, content={"error": f"{field}: {problem['msg']}"})
 
 
-@app.get("/")
+@app.get("/", summary="What this API is")
 def root():
     return {"name": "Task API", "version": "1.0", "endpoints": ["/tasks"]}
 
 
-@app.get("/health")
+@app.get("/health", summary="Is the server alive?")
 def health():
     return {"status": "ok"}
 
 
-@app.get("/tasks")
+@app.get("/tasks", summary="List every task")
 def list_tasks():
     return tasks
 
 
-@app.get("/tasks/{task_id}")
+@app.get("/tasks/{task_id}", summary="Get one task by id")
 def get_task(task_id: int):
     return find(task_id)
 
 
-@app.post("/tasks", status_code=201)
+@app.post("/tasks", status_code=201, summary="Create a task")
 def create_task(body: TaskIn):
     task = {
         "id": max((t["id"] for t in tasks), default=0) + 1,
@@ -75,7 +79,7 @@ def create_task(body: TaskIn):
     return task
 
 
-@app.put("/tasks/{task_id}")
+@app.put("/tasks/{task_id}", summary="Replace a task")
 def update_task(task_id: int, body: TaskIn):
     task = find(task_id)
     task["title"] = body.title
@@ -84,6 +88,6 @@ def update_task(task_id: int, body: TaskIn):
     return task
 
 
-@app.delete("/tasks/{task_id}", status_code=204)
+@app.delete("/tasks/{task_id}", status_code=204, summary="Delete a task")
 def delete_task(task_id: int):
     tasks.remove(find(task_id))
