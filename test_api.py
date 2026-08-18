@@ -1,4 +1,4 @@
-"""One runnable check for the whole CRUD cycle: python -m pytest, or just run this file."""
+"""One runnable check for the whole CRUD cycle. Run it with: .venv/bin/python test_api.py"""
 
 from fastapi.testclient import TestClient
 

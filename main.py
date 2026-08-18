@@ -11,7 +11,7 @@ app = FastAPI(
     description="A tiny to-do API. Tasks live in memory, so a restart wipes them.",
 )
 
-# In-memory "database" — a plain list. Restarting the server resets it.
+# The "database": a plain list. Restarting the server resets it.
 SEED = [
     {"id": 1, "title": "Read the assignment", "done": True},
     {"id": 2, "title": "Build the CRUD API", "done": False},
@@ -66,7 +66,7 @@ def list_tasks(
     limit: int = Query(50, ge=1, le=100),
     offset: int = Query(0, ge=0),
 ):
-    """Real APIs never return "everything" — hence limit/offset, capped at 100."""
+    """limit/offset is capped at 100 so this never returns an unbounded list."""
     found = tasks
     if done is not None:
         found = [t for t in found if t["done"] == done]
