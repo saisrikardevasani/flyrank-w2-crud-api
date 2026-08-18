@@ -8,6 +8,28 @@ now outlives the process.
 FastAPI generates Swagger UI from the code, so the interactive docs sit at
 http://localhost:8000/docs with nothing extra installed.
 
+## The database
+
+Postgres runs as a container, so nothing is installed on your machine:
+
+```bash
+docker run --name taskdb -e POSTGRES_PASSWORD=dev -e POSTGRES_DB=tasks \
+  -p 5432:5432 -v taskdata:/var/lib/postgresql/data -d postgres:17
+```
+
+The tag is pinned. `postgres:latest` is 18, which moved its data directory and refuses to start
+against a volume mounted at `/var/lib/postgresql/data`:
+
+```
+Error: in 18+, these Docker images are configured to store database data in a
+       format which is compatible with "pg_ctlcluster" ...
+       Counter to that, there appears to be PostgreSQL data in:
+         /var/lib/postgresql/data (unused mount/volume)
+```
+
+Open a SQL prompt inside the container with
+`docker exec -it taskdb psql -U postgres -d tasks`.
+
 ## Run it
 
 You need Python 3.10 or newer. From a clean checkout, one command:
