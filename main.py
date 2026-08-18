@@ -1,6 +1,6 @@
-import sqlite3
 from typing import Annotated, Literal
 
+import psycopg
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
@@ -13,10 +13,11 @@ db.init()
 app = FastAPI(
     title="Task API",
     version="1.0",
-    description="A tiny to-do API. Tasks are stored in a SQLite file, so they survive a restart.",
+    description="A tiny to-do API. Tasks live in a Postgres container, so they survive a restart.",
 )
 
-# Every route now goes through db.py. Nothing is kept in memory between requests.
+# Routes hold no SQL. Everything that talks to the database is in db.py, which is why
+# moving from a list to SQLite to Postgres has never changed a single route.
 
 
 class TaskIn(BaseModel):
@@ -26,12 +27,11 @@ class TaskIn(BaseModel):
     done: bool | None = None
 
 
-def fetch(conn, task_id: int) -> dict:
-    """Read one row by id, or raise a 404. The id travels as a parameter, never as text."""
-    row = conn.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()
-    if row is None:
+def found(task: dict | None, task_id: int) -> dict:
+    """Turn "no such row" into the 404 the API has always returned."""
+    if task is None:
         raise HTTPException(404, f"Task {task_id} not found")
-    return db.to_task(row)
+    return task
 
 
 @app.exception_handler(HTTPException)
@@ -40,9 +40,9 @@ async def error_shape(request, exc: HTTPException):
     return JSONResponse(status_code=exc.status_code, content={"error": exc.detail})
 
 
-@app.exception_handler(sqlite3.OperationalError)
-async def busy_database(request, exc: sqlite3.OperationalError):
-    """Another writer is holding the file (DB Browser with unsaved changes does this)."""
+@app.exception_handler(psycopg.OperationalError)
+async def database_down(request, exc: psycopg.OperationalError):
+    """The database is a separate program now, so it can be missing while the app is fine."""
     return JSONResponse(status_code=503, content={"error": f"Database unavailable: {exc}"})
 
 
@@ -61,9 +61,14 @@ def root():
     return {"name": "Task API", "version": "1.0", "endpoints": ["/tasks"]}
 
 
-@app.get("/health", summary="Is the server alive?")
+@app.get("/health", summary="Is the server alive, and can it reach the database?")
 def health():
-    return {"status": "ok"}
+    """Answers only after Postgres answers SELECT 1, so it fails when the database does."""
+    try:
+        db.ping()
+    except psycopg.Error as exc:
+        return JSONResponse(status_code=503, content={"status": "degraded", "db": str(exc)})
+    return {"status": "ok", "db": "ok"}
 
 
 @app.get("/tasks", summary="List tasks, optionally filtered")
@@ -74,74 +79,37 @@ def list_tasks(
     limit: int = Query(50, ge=1, le=100),
     offset: int = Query(0, ge=0),
 ):
-    """Filtering, searching and sorting all happen in SQL; Python never loops over rows.
-
-    Values travel as ? parameters. A column name cannot be a parameter, so `sort` is a
-    Literal: FastAPI rejects anything outside the two names before this function runs.
-    """
-    where, params = [], []
-    if done is not None:
-        where.append("done = ?")
-        params.append(done)
-    if search:
-        where.append("title LIKE ?")
-        params.append(f"%{search}%")
-    sql = "SELECT * FROM tasks"
-    if where:
-        sql += " WHERE " + " AND ".join(where)
-    sql += f" ORDER BY {sort} LIMIT ? OFFSET ?"
-    with db.transaction() as conn:
-        return [db.to_task(row) for row in conn.execute(sql, (*params, limit, offset))]
+    return db.list_tasks(done, search, sort, limit, offset)
 
 
 @app.get("/tasks/{task_id}", summary="Get one task by id")
 def get_task(task_id: int):
-    with db.transaction() as conn:
-        return fetch(conn, task_id)
+    return found(db.get(task_id), task_id)
 
 
 @app.post("/tasks", status_code=201, summary="Create a task")
 def create_task(body: TaskIn):
     """The database hands out the id; the client never sends one."""
-    with db.transaction() as conn:
-        cur = conn.execute(
-            "INSERT INTO tasks (title, done) VALUES (?, ?)", (body.title, bool(body.done))
-        )
-        return fetch(conn, cur.lastrowid)
+    return db.create(body.title, bool(body.done))
 
 
 @app.put("/tasks/{task_id}", summary="Replace a task")
 def update_task(task_id: int, body: TaskIn):
-    """A body without `done` keeps the stored value, so renaming a finished task keeps it done."""
-    with db.transaction() as conn:
-        done = fetch(conn, task_id)["done"] if body.done is None else body.done
-        conn.execute(
-            "UPDATE tasks SET title = ?, done = ?, updated_at = datetime('now') WHERE id = ?",
-            (body.title, done, task_id),
-        )
-        return fetch(conn, task_id)
+    return found(db.update(task_id, body.title, body.done), task_id)
 
 
 @app.delete("/tasks/{task_id}", status_code=204, summary="Delete a task")
 def delete_task(task_id: int):
-    with db.transaction() as conn:
-        fetch(conn, task_id)
-        conn.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
+    if not db.delete(task_id):
+        raise HTTPException(404, f"Task {task_id} not found")
 
 
 @app.get("/stats", summary="Count tasks by state")
 def stats():
-    with db.transaction() as conn:
-        total = conn.execute("SELECT COUNT(*) FROM tasks").fetchone()[0]
-        done = conn.execute("SELECT COUNT(*) FROM tasks WHERE done = 1").fetchone()[0]
-    return {"total": total, "done": done, "open": total - done}
+    row = db.counts()
+    return {"total": row["total"], "done": row["done"], "open": row["total"] - row["done"]}
 
 
 @app.post("/reset", summary="Restore the 3 example tasks")
 def reset():
-    """Empty the table and seed it again. Ids restart at 1 because none are left to follow."""
-    with db.transaction() as conn:
-        conn.execute("DELETE FROM tasks")
-    db.init()
-    with db.transaction() as conn:
-        return [db.to_task(row) for row in conn.execute("SELECT * FROM tasks")]
+    return db.reset()
