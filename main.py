@@ -5,18 +5,19 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, StringConstraints
 
+import db
+
+db.init()
+
 app = FastAPI(
     title="Task API",
     version="1.0",
-    description="A tiny to-do API. Tasks live in memory, so a restart wipes them.",
+    description="A tiny to-do API. Tasks are stored in a SQLite file, so they survive a restart.",
 )
 
-# The "database": a plain list. Restarting the server resets it.
-SEED = [
-    {"id": 1, "title": "Read the assignment", "done": True},
-    {"id": 2, "title": "Build the CRUD API", "done": False},
-    {"id": 3, "title": "Push it to GitHub", "done": False},
-]
+# The three example tasks now live in db.py, which puts them in tasks.db on first run.
+# The routes below still read this list; the next stages move them onto SQL one at a time.
+SEED = db.SEED
 tasks = [dict(t) for t in SEED]
 
 
