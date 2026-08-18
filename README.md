@@ -63,37 +63,17 @@ To run the checks: `.venv/bin/python test_api.py`, which prints `all checks pass
 `tasks.db` is git-ignored (along with the `-wal` and `-shm` files SQLite writes beside it), so
 every clone starts from the same three seeded tasks rather than from my test data.
 
-## Proof: the same responses, now from disk
+## Proof: the same responses, now from Postgres
+
+Reads first. Same URLs, same JSON shapes, same status codes as A1 and A2; the rows come off a
+Postgres server instead of a file.
 
 ```console
 $ curl -i http://localhost:3000/tasks
 HTTP/1.1 200 OK
 content-type: application/json
 
-[{"id":1,"title":"Read the assignment","done":true,"created_at":"2026-08-18 13:17:40","updated_at":"2026-08-18 13:17:40"},{"id":2,"title":"Build the CRUD API","done":false,"created_at":"2026-08-18 13:17:40","updated_at":"2026-08-18 13:17:40"},{"id":3,"title":"Push it to GitHub","done":false,"created_at":"2026-08-18 13:17:40","updated_at":"2026-08-18 13:17:40"}]
-
-$ curl -i -X POST http://localhost:3000/tasks -H "Content-Type: application/json" -d '{"title":"Buy milk"}'
-HTTP/1.1 201 Created
-content-type: application/json
-
-{"id":4,"title":"Buy milk","done":false,"created_at":"2026-08-18 13:17:43","updated_at":"2026-08-18 13:17:43"}
-
-$ curl -i -X POST http://localhost:3000/tasks -H "Content-Type: application/json" -d '{}'
-HTTP/1.1 400 Bad Request
-content-type: application/json
-
-{"error":"title: Field required"}
-
-$ curl -i -X PUT http://localhost:3000/tasks/4 -H "Content-Type: application/json" -d '{"title":"Buy oat milk","done":true}'
-HTTP/1.1 200 OK
-content-type: application/json
-
-{"id":4,"title":"Buy oat milk","done":true,"created_at":"2026-08-18 13:17:43","updated_at":"2026-08-18 13:17:43"}
-
-$ curl -i -X DELETE http://localhost:3000/tasks/4
-HTTP/1.1 204 No Content
-content-type: application/json
-
+[{"id":1,"title":"Read the assignment","done":true,"created_at":"2026-08-18T13:59:00.837806+00:00","updated_at":"2026-08-18T13:59:00.837806+00:00"},{"id":2,"title":"Build the CRUD API","done":false,"created_at":"2026-08-18T13:59:00.837806+00:00","updated_at":"2026-08-18T13:59:00.837806+00:00"},{"id":3,"title":"Push it to GitHub","done":false,"created_at":"2026-08-18T13:59:00.837806+00:00","updated_at":"2026-08-18T13:59:00.837806+00:00"}]
 
 $ curl -i http://localhost:3000/tasks/999
 HTTP/1.1 404 Not Found
