@@ -15,10 +15,8 @@ app = FastAPI(
     description="A tiny to-do API. Tasks are stored in a SQLite file, so they survive a restart.",
 )
 
-# The three example tasks now live in db.py, which puts them in tasks.db on first run.
-# PUT and DELETE below still use this list; stage 3 moves them onto SQL as well.
+# Every route now goes through db.py. Nothing is kept in memory between requests.
 SEED = db.SEED
-tasks = [dict(t) for t in SEED]
 
 
 class TaskIn(BaseModel):
@@ -26,14 +24,6 @@ class TaskIn(BaseModel):
 
     title: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
     done: bool | None = None
-
-
-def find(task_id: int):
-    """Return the in-memory task with this id, or raise a 404. Stage 3 retires this."""
-    for task in tasks:
-        if task["id"] == task_id:
-            return task
-    raise HTTPException(404, f"Task {task_id} not found")
 
 
 def fetch(conn, task_id: int) -> dict:
@@ -103,25 +93,35 @@ def create_task(body: TaskIn):
 
 @app.put("/tasks/{task_id}", summary="Replace a task")
 def update_task(task_id: int, body: TaskIn):
-    task = find(task_id)
-    task["title"] = body.title
-    if body.done is not None:
-        task["done"] = body.done
-    return task
+    """A body without `done` keeps the stored value, so renaming a finished task keeps it done."""
+    with db.transaction() as conn:
+        done = fetch(conn, task_id)["done"] if body.done is None else body.done
+        conn.execute(
+            "UPDATE tasks SET title = ?, done = ? WHERE id = ?", (body.title, done, task_id)
+        )
+        return fetch(conn, task_id)
 
 
 @app.delete("/tasks/{task_id}", status_code=204, summary="Delete a task")
 def delete_task(task_id: int):
-    tasks.remove(find(task_id))
+    with db.transaction() as conn:
+        fetch(conn, task_id)
+        conn.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
 
 
 @app.get("/stats", summary="Count tasks by state")
 def stats():
-    done = sum(1 for t in tasks if t["done"])
-    return {"total": len(tasks), "done": done, "open": len(tasks) - done}
+    with db.transaction() as conn:
+        total = conn.execute("SELECT COUNT(*) FROM tasks").fetchone()[0]
+        done = conn.execute("SELECT COUNT(*) FROM tasks WHERE done = 1").fetchone()[0]
+    return {"total": total, "done": done, "open": total - done}
 
 
 @app.post("/reset", summary="Restore the 3 example tasks")
 def reset():
-    tasks[:] = [dict(t) for t in SEED]
-    return tasks
+    """Empty the table and seed it again. Ids restart at 1 because none are left to follow."""
+    with db.transaction() as conn:
+        conn.execute("DELETE FROM tasks")
+    db.init()
+    with db.transaction() as conn:
+        return [db.to_task(row) for row in conn.execute("SELECT * FROM tasks")]
